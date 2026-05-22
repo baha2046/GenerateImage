@@ -35,8 +35,7 @@ MODELS = {
     },
 }
 
-SAFE_FILENAME_RE = re.compile(r"^[A-Za-z0-9._-]+$")
-IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp"}
+SAFE_PREFIX_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 
 
 def field(form: dict[str, str], name: str, default: str = "") -> str:
@@ -54,33 +53,29 @@ def parse_int(value: str, name: str, minimum: int, maximum: int) -> int:
     return parsed
 
 
-def default_filename(model: str, now: datetime | None = None) -> str:
+def default_filename_prefix(model: str) -> str:
     model_config = MODELS.get(model, MODELS["zimage"])
+    return str(model_config["filename_prefix"])
+
+
+def timestamped_filename(prefix: str, now: datetime | None = None) -> str:
     timestamp = (now or datetime.now()).strftime("%Y%m%d-%H%M%S")
-    return f"{model_config['filename_prefix']}-{timestamp}.png"
+    return f"{prefix}-{timestamp}.png"
 
 
-def sanitize_filename(raw_filename: str, model: str) -> str:
-    filename = raw_filename.strip() or default_filename(model)
+def sanitize_filename_prefix(raw_prefix: str, model: str) -> str:
+    prefix = raw_prefix.strip() or default_filename_prefix(model)
 
-    if "/" in filename or "\\" in filename or filename != Path(filename).name:
-        raise ValueError("Output filename must be a simple file name, not a path.")
+    if "/" in prefix or "\\" in prefix or prefix != Path(prefix).name:
+        raise ValueError("Output filename prefix must be a simple name, not a path.")
 
-    if not SAFE_FILENAME_RE.fullmatch(filename):
-        raise ValueError("Output filename can only contain letters, numbers, dots, underscores, and hyphens.")
+    if not SAFE_PREFIX_RE.fullmatch(prefix):
+        raise ValueError("Output filename prefix can only contain letters, numbers, underscores, and hyphens.")
 
-    path = Path(filename)
-    if not path.suffix:
-        filename = f"{filename}.png"
-        path = Path(filename)
+    return prefix
 
-    if path.suffix.lower() not in IMAGE_EXTENSIONS:
-        raise ValueError("Output filename must end with .png, .jpg, .jpeg, or .webp.")
-
-    if filename in {".png", ".jpg", ".jpeg", ".webp"}:
-        raise ValueError("Output filename needs a name before the extension.")
-
-    return filename
+def output_filename(prefix: str, now: datetime | None = None) -> str:
+    return timestamped_filename(prefix, now)
 
 
 def validate_form(form: dict[str, str]) -> tuple[dict[str, object], list[str]]:
@@ -123,21 +118,23 @@ def validate_form(form: dict[str, str]) -> tuple[dict[str, object], list[str]]:
             errors.append(str(exc))
             seed = 42
 
+    valid_model = model if model in MODELS else "zimage"
     try:
-        filename = sanitize_filename(field(form, "filename"), model if model in MODELS else "zimage")
+        filename_prefix = sanitize_filename_prefix(field(form, "filename_prefix"), valid_model)
     except ValueError as exc:
         errors.append(str(exc))
-        filename = default_filename(model if model in MODELS else "zimage")
+        filename_prefix = default_filename_prefix(valid_model)
 
     values: dict[str, object] = {
-        "model": model if model in MODELS else "zimage",
+        "model": valid_model,
         "prompt": prompt,
         "width": width,
         "height": height,
         "steps": steps,
         "seed": seed,
         "random_seed": random_seed,
-        "filename": filename,
+        "filename_prefix": filename_prefix,
+        "filename": output_filename(filename_prefix),
     }
     return values, errors
 
@@ -214,7 +211,8 @@ def page(values: dict[str, object] | None = None, result: dict[str, object] | No
         "steps": MODELS["zimage"]["default_steps"],
         "seed": 42,
         "random_seed": False,
-        "filename": default_filename("zimage"),
+        "filename_prefix": default_filename_prefix("zimage"),
+        "filename": "",
     }
     errors = errors or []
     client_defaults = {
@@ -474,8 +472,8 @@ def page(values: dict[str, object] | None = None, result: dict[str, object] | No
           Use random seed
         </label>
 
-        <label for="filename">Output filename</label>
-        <input id="filename" name="filename" value="{html.escape(str(values["filename"]))}" placeholder="image.png">
+        <label for="filename_prefix">Output filename prefix</label>
+        <input id="filename_prefix" name="filename_prefix" value="{html.escape(str(values["filename_prefix"]))}" placeholder="zimage">
 
         <button id="generate-button" type="submit">Generate Image</button>
       </form>
@@ -486,33 +484,14 @@ def page(values: dict[str, object] | None = None, result: dict[str, object] | No
     const modelDefaults = {client_defaults_json};
     const modelSelect = document.getElementById("model");
     const stepsInput = document.getElementById("steps");
-    const filenameInput = document.getElementById("filename");
+    const filenamePrefixInput = document.getElementById("filename_prefix");
     const form = document.getElementById("generator-form");
     const button = document.getElementById("generate-button");
-
-    function timestampForFilename() {{
-      const now = new Date();
-      const pad = (value) => String(value).padStart(2, "0");
-      return [
-        now.getFullYear(),
-        pad(now.getMonth() + 1),
-        pad(now.getDate()),
-      ].join("") + "-" + [
-        pad(now.getHours()),
-        pad(now.getMinutes()),
-        pad(now.getSeconds()),
-      ].join("");
-    }}
-
-    function defaultFilename(modelName) {{
-      const defaults = modelDefaults[modelName] || modelDefaults.zimage;
-      return `${{defaults.filenamePrefix}}-${{timestampForFilename()}}.png`;
-    }}
 
     modelSelect.addEventListener("change", () => {{
       const defaults = modelDefaults[modelSelect.value] || modelDefaults.zimage;
       stepsInput.value = defaults.steps;
-      filenameInput.value = defaultFilename(modelSelect.value);
+      filenamePrefixInput.value = defaults.filenamePrefix;
     }});
 
     form.addEventListener("submit", () => {{
