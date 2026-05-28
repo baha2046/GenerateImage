@@ -9,30 +9,92 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 
-from quart import Quart, Response, abort, jsonify, request, send_file, websocket
+from quart import Quart, Response, abort, jsonify, request, send_file, send_from_directory, websocket
 
 ROOT = Path(__file__).resolve().parent
 OUTPUTS_DIR = ROOT / "outputs"
 PROMPT_HISTORY_PATH = ROOT / "prompt_history.json"
+FORM_STATE_PATH = ROOT / "form_state.json"
+UI_SETTINGS_PATH = ROOT / "ui_settings.json"
+PROMPT_TEMPLATES_PATH = ROOT / "prompt_templates.json"
 MAX_PROMPT_HISTORY = 100
+MIN_DIMENSION = 64
+MAX_DIMENSION = 2048
 HOST = "127.0.0.1"
 PORT = 5002
 app = Quart(__name__)
 JOBS: dict[str, dict[str, object]] = {}
 MAX_COMPLETED_JOBS = 20
 
+# Static file serving for extracted CSS/JS (Phase B)
+@app.route("/static/<path:filename>")
+async def static_files(filename: str):
+    return await send_from_directory("static", filename)
+
 MODELS = {
     "zimage": {
         "label": "Z-Image Turbo",
         "command": ROOT / ".venv/bin/mflux-generate-z-image-turbo",
-        "extra_args": [],
+        "extra_args": [
+            "--model", "carsenk/z-image-turbo-mflux-8bit",
+            "--lora-paths", "/Users/ericchan/Project/image/lora/NSFW_master_ZIT_000017532.safetensors",
+            "--lora-scales", "0.8",
+        ],
         "default_steps": 9,
+        "filename_prefix": "zimage",
+    },
+    "zimage-base": {
+        "label": "Z-Image",
+        "command": ROOT / ".venv/bin/mflux-generate-z-image",
+        "extra_args": [
+            "--model", "deepsweet/Z-Image-6B-MLX-Q8",
+            "--guidance", "4",
+        ],
+        "default_steps": 50,
         "filename_prefix": "zimage",
     },
     "flux2": {
         "label": "Flux 2 Klein 4B",
         "command": ROOT / ".venv/bin/mflux-generate-flux2",
-        "extra_args": ["--model", "flux2-klein-4b"],
+        "extra_args": [
+            "--model", "flux2-klein-4b",
+            "-q", "8",
+        ],
+        "default_steps": 4,
+        "filename_prefix": "flux",
+    },
+    "flux2-9B": {
+        "label": "Flux 2 Klein 9B 4bit",
+        "command": ROOT / ".venv/bin/mflux-generate-flux2",
+        "extra_args": [
+            "--model", "AITRADER/FLUX2-klein-9B-mlx-4bit",
+            "--base-model", "flux2-klein-9b",
+            "--guidance", "1.0",
+        ],
+        "default_steps": 4,
+        "filename_prefix": "flux",
+    },
+    "flux2-9B-lora": {
+        "label": "Flux 2 Klein 9B LORA",
+        "command": ROOT / ".venv/bin/mflux-generate-flux2",
+        "extra_args": [
+            "--model", "AITRADER/FLUX2-klein-9B-mlx-4bit",
+            "--base-model", "flux2-klein-9b",
+            "--lora-paths", "/Users/ericchan/Project/image/lora/Flux%20Klein%20-%20NSFW%20v2.safetensors",
+            "--lora-scales", "0.7",
+        ],
+        "default_steps": 20,
+        "filename_prefix": "flux",
+    },
+    "flux2-9B-face": {
+        "label": "Flux 2 Klein 9B 4bit Face",
+        "command": ROOT / ".venv/bin/mflux-generate-flux2-edit",
+        "extra_args": [
+            "--model", "AITRADER/FLUX2-klein-9B-mlx-4bit",
+            "--base-model", "flux2-klein-9b",
+            "--image-paths", "face.png",
+            "--guidance", "1.0",
+        ],
         "default_steps": 4,
         "filename_prefix": "flux",
     },
@@ -43,14 +105,25 @@ MODELS = {
             "--negative-prompt", "blurry, low quality, distorted, deformed, ugly, bad anatomy, bad proportions, extra limbs, duplicate, watermark, signature, text, letters, cartoon, anime, painting, drawing, illustration, 3d render, cgi, zoo, cage, artificial",
             "--lora-paths", "/Users/ericchan/Project/image/lora/Qwen-Image-Lightning-8steps-V2.0.safetensors",
             "--lora-scales", "0.5",
+            "-q", "8",
         ],
         "default_steps": 8,
+        "filename_prefix": "qwen",
+    },
+    "qwen-2512": {
+        "label": "Qwen Image 2512 4bit",
+        "command": ROOT / ".venv/bin/mflux-generate-qwen",
+        "extra_args": [
+            "--model", "machiabeli/Qwen-Image-2512-4bit-MLX",
+        ],
+        "default_steps": 20,
         "filename_prefix": "qwen",
     },
 }
 
 SAFE_PREFIX_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp"}
 
 
 def field(form: dict[str, str], name: str, default: str = "") -> str:
@@ -114,6 +187,242 @@ def delete_prompt_history(prompt: str) -> list[str]:
     return load_prompt_history()
 
 
+# === Prompt Templates (richer saved presets) ===
+
+def load_prompt_templates() -> list[dict]:
+    try:
+        data = json.loads(PROMPT_TEMPLATES_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return []
+
+    if not isinstance(data, list):
+        return []
+
+    templates: list[dict] = []
+    seen_names: set[str] = set()
+    for item in data:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name", "")).strip()
+        if not name or name in seen_names:
+            continue
+        templates.append(item)
+        seen_names.add(name)
+    return templates
+
+
+def save_prompt_templates(templates: list[dict]) -> None:
+    # Keep it simple and defensive
+    normalized = []
+    seen = set()
+    for t in templates:
+        if not isinstance(t, dict):
+            continue
+        name = str(t.get("name", "")).strip()
+        if not name or name in seen:
+            continue
+        normalized.append(t)
+        seen.add(name)
+
+    PROMPT_TEMPLATES_PATH.write_text(json.dumps(normalized, indent=2) + "\n", encoding="utf-8")
+
+
+def add_prompt_template(template: dict) -> list[dict]:
+    templates = load_prompt_templates()
+
+    name = str(template.get("name", "")).strip()
+    if not name:
+        return templates
+
+    # Remove existing with same name (overwrite on save)
+    templates = [t for t in templates if str(t.get("name", "")).strip().lower() != name.lower()]
+    templates.insert(0, template)
+
+    save_prompt_templates(templates)
+    return templates
+
+
+def delete_prompt_template(name: str) -> list[dict]:
+    cleaned = name.strip()
+    templates = [t for t in load_prompt_templates() if str(t.get("name", "")).strip() != cleaned]
+    save_prompt_templates(templates)
+    return templates
+
+
+def rename_prompt_template(old_name: str, new_name: str) -> list[dict]:
+    old = old_name.strip()
+    new = new_name.strip()
+
+    if not old or not new:
+        return load_prompt_templates()
+
+    templates = load_prompt_templates()
+
+    # Find the template to rename
+    target = None
+    for t in templates:
+        if str(t.get("name", "")).strip() == old:
+            target = t
+            break
+
+    if not target:
+        return templates
+
+    # Check if new name already exists (we'll overwrite the old one, but prevent conflict)
+    existing_new = any(
+        str(t.get("name", "")).strip().lower() == new.lower() and str(t.get("name", "")).strip() != old
+        for t in templates
+    )
+    if existing_new:
+        # Simple behavior: don't allow rename to existing name
+        return templates
+
+    # Perform rename
+    target["name"] = new
+
+    # Remove any duplicate with the exact new name (defensive)
+    templates = [t for t in templates if str(t.get("name", "")).strip() != new or t is target]
+
+    save_prompt_templates(templates)
+    return templates
+
+
+def validate_dimension(value: object, name: str) -> int:
+    try:
+        parsed = int(str(value).strip())
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{name} must be a whole number.") from exc
+
+    if parsed < MIN_DIMENSION or parsed > MAX_DIMENSION:
+        raise ValueError(f"{name} must be between {MIN_DIMENSION} and {MAX_DIMENSION}.")
+    return parsed
+
+
+def load_form_state() -> dict[str, int]:
+    fallback = {"width": 512, "height": 512}
+    try:
+        data = json.loads(FORM_STATE_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return fallback
+
+    if not isinstance(data, dict):
+        return fallback
+
+    try:
+        return {
+            "width": validate_dimension(data.get("width", fallback["width"]), "Width"),
+            "height": validate_dimension(data.get("height", fallback["height"]), "Height"),
+        }
+    except ValueError:
+        return fallback
+
+
+def save_form_dimensions(width: int, height: int) -> dict[str, int]:
+    state = {
+        "width": validate_dimension(width, "Width"),
+        "height": validate_dimension(height, "Height"),
+    }
+    FORM_STATE_PATH.write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
+    return state
+
+
+def load_ui_settings() -> dict[str, object]:
+    defaults = {
+        "theme": "system",                 # "light" | "dark" | "system"
+        "default_model": "zimage",
+        "auto_open_gallery_on_success": False,
+        "show_advanced_by_default": False,
+    }
+    try:
+        data = json.loads(UI_SETTINGS_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return defaults
+
+    if not isinstance(data, dict):
+        return defaults
+
+    return {
+        "theme": data.get("theme", defaults["theme"]),
+        "default_model": data.get("default_model", defaults["default_model"]),
+        "auto_open_gallery_on_success": bool(data.get("auto_open_gallery_on_success", defaults["auto_open_gallery_on_success"])),
+        "show_advanced_by_default": bool(data.get("show_advanced_by_default", defaults["show_advanced_by_default"])),
+    }
+
+
+def save_ui_settings(settings: dict[str, object]) -> dict[str, object]:
+    cleaned = {
+        "theme": settings.get("theme", "system"),
+        "default_model": settings.get("default_model", "zimage"),
+        "auto_open_gallery_on_success": bool(settings.get("auto_open_gallery_on_success", False)),
+        "show_advanced_by_default": bool(settings.get("show_advanced_by_default", False)),
+    }
+    UI_SETTINGS_PATH.write_text(json.dumps(cleaned, indent=2) + "\n", encoding="utf-8")
+    return cleaned
+
+
+def format_file_size(size: int) -> str:
+    units = ["B", "KB", "MB", "GB"]
+    value = float(size)
+    for unit in units:
+        if value < 1024 or unit == units[-1]:
+            return f"{value:.1f} {unit}" if unit != "B" else f"{int(value)} {unit}"
+        value /= 1024
+    return f"{size} B"
+
+
+def safe_output_image_path(filename: str) -> Path:
+    clean_name = filename.strip()
+    if not clean_name or "/" in clean_name or "\\" in clean_name or clean_name != Path(clean_name).name:
+        raise ValueError("Invalid image filename.")
+
+    path = (OUTPUTS_DIR / clean_name).resolve()
+    outputs_root = OUTPUTS_DIR.resolve()
+    if outputs_root not in path.parents or path.suffix.lower() not in IMAGE_EXTENSIONS:
+        raise ValueError("Invalid image filename.")
+    return path
+
+
+def list_output_images() -> list[dict[str, object]]:
+    if not OUTPUTS_DIR.exists():
+        return []
+
+    images: list[dict[str, object]] = []
+    for path in OUTPUTS_DIR.iterdir():
+        if not path.is_file() or path.suffix.lower() not in IMAGE_EXTENSIONS:
+            continue
+        stat = path.stat()
+        name = path.name
+        lower = name.lower()
+
+        # Derive filter-friendly metadata from filename convention
+        is_upscaled = lower.startswith("upscaled-")
+        base = name[9:] if is_upscaled else name  # strip "upscaled-" prefix if present
+        prefix = base.split("-", 1)[0] if "-" in base else "other"
+
+        images.append(
+            {
+                "filename": name,
+                "url": f"/outputs/{name}",
+                "size": stat.st_size,
+                "size_label": format_file_size(stat.st_size),
+                "modified": datetime.fromtimestamp(stat.st_mtime).isoformat(timespec="seconds"),
+                "prefix": prefix,               # e.g. "flux", "zimage", "qwen"
+                "is_upscaled": is_upscaled,
+            }
+        )
+
+    images.sort(key=lambda item: str(item["modified"]), reverse=True)
+    return images
+
+
+def delete_output_image(filename: str) -> list[dict[str, object]]:
+    path = safe_output_image_path(filename)
+    if not path.exists() or not path.is_file():
+        raise FileNotFoundError("Image file not found.")
+    path.unlink()
+    return list_output_images()
+
+
 def parse_int(value: str, name: str, minimum: int, maximum: int) -> int:
     try:
         parsed = int(value)
@@ -123,6 +432,10 @@ def parse_int(value: str, name: str, minimum: int, maximum: int) -> int:
     if parsed < minimum or parsed > maximum:
         raise ValueError(f"{name} must be between {minimum} and {maximum}.")
     return parsed
+
+
+def clamp_dimension(value: int) -> int:
+    return max(MIN_DIMENSION, min(MAX_DIMENSION, value))
 
 
 def default_filename_prefix(model: str) -> str:
@@ -169,13 +482,13 @@ def validate_form(form: dict[str, str]) -> tuple[dict[str, object], list[str]]:
         errors.append("Prompt is required.")
 
     try:
-        width = parse_int(field(form, "width", "512"), "Width", 64, 2048)
+        width = validate_dimension(field(form, "width", "512"), "Width")
     except ValueError as exc:
         errors.append(str(exc))
         width = 512
 
     try:
-        height = parse_int(field(form, "height", "512"), "Height", 64, 2048)
+        height = validate_dimension(field(form, "height", "512"), "Height")
     except ValueError as exc:
         errors.append(str(exc))
         height = 512
@@ -214,6 +527,33 @@ def validate_form(form: dict[str, str]) -> tuple[dict[str, object], list[str]]:
     else:
         upscale_resolution = default_resolution
 
+    # Advanced parameters (optional, only passed through if user provided non-empty values)
+    guidance_raw = field(form, "guidance")
+    lora_scale_raw = field(form, "lora_scale")
+    negative_prompt = field(form, "negative_prompt")
+
+    guidance = None
+    if guidance_raw:
+        try:
+            g = float(guidance_raw)
+            if 0 <= g <= 20:
+                guidance = g
+            else:
+                errors.append("Guidance must be between 0 and 20.")
+        except ValueError:
+            errors.append("Guidance must be a number.")
+
+    lora_scale = None
+    if lora_scale_raw:
+        try:
+            ls = float(lora_scale_raw)
+            if 0 <= ls <= 2:
+                lora_scale = ls
+            else:
+                errors.append("LoRA scale must be between 0 and 2.")
+        except ValueError:
+            errors.append("LoRA scale must be a number.")
+
     values: dict[str, object] = {
         "model": valid_model,
         "prompt": prompt,
@@ -227,6 +567,9 @@ def validate_form(form: dict[str, str]) -> tuple[dict[str, object], list[str]]:
         "upscale_enabled": upscale_enabled,
         "upscale_resolution": upscale_resolution,
         "upscale_resolution_raw": upscale_resolution_raw,
+        "guidance": guidance,
+        "lora_scale": lora_scale,
+        "negative_prompt": negative_prompt or None,
     }
     return values, errors
 
@@ -332,6 +675,10 @@ async def run_command(command: list[str], phase: str, job: dict[str, object]) ->
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
+
+    # Store the process so we can cancel it later
+    job["_process"] = process
+
     stdout: list[str] = []
     stderr: list[str] = []
     await asyncio.gather(
@@ -339,7 +686,34 @@ async def run_command(command: list[str], phase: str, job: dict[str, object]) ->
         collect_process_stream(process.stderr, "stderr", phase, job, stderr),
     )
     return_code = await process.wait()
+
+    # Clear process reference when done
+    job.pop("_process", None)
+
     return return_code, stdout, stderr
+
+
+async def cancel_job(job: dict[str, object]) -> bool:
+    """Attempt to cancel a running job by killing its subprocess."""
+    process = job.get("_process")
+    if process and process.returncode is None:
+        try:
+            process.kill()
+            job["status"] = "cancelled"
+            await emit_job_message(
+                job,
+                {
+                    "type": "error",
+                    "status": "cancelled",
+                    "phase": "cancelled",
+                    "message": "Generation cancelled by user.",
+                },
+            )
+            job.pop("_process", None)
+            return True
+        except Exception:
+            return False
+    return False
 
 
 async def run_upscale(image_path: Path, resolution: int, job: dict[str, object]) -> dict[str, object]:
@@ -448,11 +822,19 @@ async def run_generation(values: dict[str, object], job: dict[str, object]) -> d
         str(values["seed"]),
         "--steps",
         str(values["steps"]),
-        "-q",
-        "8",
-        "--output",
-        str(output_path),
     ]
+
+    # Advanced parameters (only added when user explicitly provided values)
+    if values.get("guidance") is not None:
+        command.extend(["--guidance", str(values["guidance"])])
+
+    if values.get("lora_scale") is not None:
+        command.extend(["--lora-scales", str(values["lora_scale"])])
+
+    if values.get("negative_prompt"):
+        command.extend(["--negative-prompt", str(values["negative_prompt"])])
+
+    command.extend(["--output", str(output_path)])
 
     try:
         return_code, stdout, stderr = await run_command(command, "generating", job)
@@ -495,6 +877,63 @@ async def run_generation_with_optional_upscale(values: dict[str, object], job: d
     await set_job_status(job, "upscaling", "upscaling", "Upscaling image...")
     result["upscale"] = await run_upscale(Path(result["output_path"]), int(values["upscale_resolution"]), job)
     return result
+
+
+async def run_upscale_only(job_id: str, image_path: Path, resolution: int) -> None:
+    """Standalone upscale job (triggered from gallery)."""
+    job = JOBS.get(job_id)
+    if not job:
+        return
+    try:
+        await set_job_status(job, "upscaling", "upscaling", f"Upscaling {image_path.name}...")
+        result = await run_upscale(image_path, resolution, job)
+        job["result"] = result
+        status = "done" if result.get("success") else "error"
+
+        # Lightweight result card for standalone upscales
+        if result.get("success"):
+            upscaled_url = result.get("image_url", "")
+            final_html = f"""
+            <section class="result">
+              <h2>Upscale Complete</h2>
+              <div class="alert ok">Image upscaled successfully to {resolution}px.</div>
+              <p class="meta"><strong>Source:</strong> {html.escape(str(image_path.name))}</p>
+              <p class="meta"><strong>Output:</strong> {html.escape(str(result.get("output_path", "")))}</p>
+              <img src="{html.escape(upscaled_url)}" alt="Upscaled image">
+            </section>
+            """
+        else:
+            final_html = f"""
+            <section class="result">
+              <h2>Upscale Failed</h2>
+              <div class="alert error">{html.escape(str(result.get("error", "Unknown error")))}</div>
+            </section>
+            """
+
+        await emit_job_message(
+            job,
+            {
+                "type": "done" if status == "done" else "error",
+                "status": status,
+                "phase": "done" if status == "done" else "error",
+                "result_html": final_html,
+            },
+        )
+        job["status"] = status
+    except Exception as exc:
+        job["status"] = "error"
+        await emit_job_message(
+            job,
+            {
+                "type": "error",
+                "status": "error",
+                "phase": "error",
+                "message": str(exc),
+                "result_html": f'<section class="result"><div class="alert error">{html.escape(str(exc))}</div></section>',
+            },
+        )
+    finally:
+        prune_completed_jobs()
 
 
 async def run_job(job_id: str) -> None:
@@ -541,12 +980,40 @@ async def run_job(job_id: str) -> None:
         prune_completed_jobs()
 
 
+def svg_icon(name: str) -> str:
+    icons = {
+        "history": '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v5h5"/><path d="M12 7v5l3 2"/></svg>',
+        "image": '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="2"/><circle cx="8.5" cy="10.5" r="1.5"/><path d="m21 15-5-5L5 19"/></svg>',
+        "check": '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m20 6-11 11-5-5"/></svg>',
+        "external": '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M21 14v5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5"/></svg>',
+        "rename": '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>',
+        "trash": '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="m19 6-1 14H6L5 6"/><path d="M10 11v5"/><path d="M14 11v5"/></svg>',
+        "close": '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>',
+        "upscale": '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 17h4v4"/><path d="m7 17-4 4"/><path d="M21 7h-4V3"/><path d="m17 7 4-4"/><rect x="8" y="8" width="8" height="8" rx="1"/></svg>',
+        "settings": '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15.5A3.5 3.5 0 0 1 8.5 12 3.5 3.5 0 0 1 12 8.5a3.5 3.5 0 0 1 3.5 3.5 3.5 3.5 0 0 1-3.5 3.5"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>',
+    }
+    return icons.get(name, "")
+
+
+def get_static_version(filename: str) -> str:
+    """Return a cache-busting query string based on file mtime (great for dev)."""
+    try:
+        path = ROOT / "static" / filename
+        if path.exists():
+            mtime = int(path.stat().st_mtime)
+            return f"?v={mtime}"
+    except Exception:
+        pass
+    return ""
+
+
 def page(values: dict[str, object] | None = None, result: dict[str, object] | None = None, errors: list[str] | None = None) -> str:
+    saved_dimensions = load_form_state()
     values = values or {
         "model": "zimage",
         "prompt": "A puffin standing on a cliff",
-        "width": 512,
-        "height": 512,
+        "width": saved_dimensions["width"],
+        "height": saved_dimensions["height"],
         "steps": MODELS["zimage"]["default_steps"],
         "seed": 42,
         "random_seed": False,
@@ -566,6 +1033,10 @@ def page(values: dict[str, object] | None = None, result: dict[str, object] | No
     }
     client_defaults_json = json.dumps(client_defaults)
 
+    # Cache-busting versions for static assets (prevents stale JS/CSS in browsers like Edge)
+    js_version = get_static_version("app.js")
+    css_version = get_static_version("app.css")
+
     model_options = "\n".join(
         f'<option value="{html.escape(name)}" {"selected" if values["model"] == name else ""}>{html.escape(config["label"])}</option>'
         for name, config in MODELS.items()
@@ -579,343 +1050,28 @@ def page(values: dict[str, object] | None = None, result: dict[str, object] | No
 
     result_html = render_result(result, values)
 
+    # Pre-build the small client config script outside the giant f-string to avoid
+    # brace-escaping / NameError issues with embedded JS object literals.
+    config_script = f'''<script>
+    window.APP_CONFIG = {{
+      modelDefaults: {client_defaults_json},
+      icons: {{
+        check: `{svg_icon("check")}`,
+        external: `{svg_icon("external")}`,
+        rename: `{svg_icon("rename")}`,
+        trash: `{svg_icon("trash")}`,
+        upscale: `{svg_icon("upscale")}`,
+      }}
+    }};
+  </script>'''
+
     document = f"""<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Local Image Generator</title>
-  <style>
-    :root {{
-      color-scheme: light dark;
-      --bg: #f7f7f4;
-      --panel: #ffffff;
-      --text: #1e2428;
-      --muted: #626b73;
-      --line: #d9dedb;
-      --accent: #0f766e;
-      --accent-dark: #115e59;
-      --error-bg: #fff1f0;
-      --error-text: #9f1d1d;
-      --ok-bg: #eefbf4;
-      --ok-text: #17633a;
-    }}
-
-    @media (prefers-color-scheme: dark) {{
-      :root {{
-        --bg: #111514;
-        --panel: #1a201f;
-        --text: #edf3f1;
-        --muted: #a7b1ad;
-        --line: #33413d;
-        --accent: #2dd4bf;
-        --accent-dark: #5eead4;
-        --error-bg: #36191a;
-        --error-text: #ffc7c2;
-        --ok-bg: #123225;
-        --ok-text: #a8f0c9;
-      }}
-    }}
-
-    * {{
-      box-sizing: border-box;
-    }}
-
-    body {{
-      margin: 0;
-      background: var(--bg);
-      color: var(--text);
-      font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-      line-height: 1.45;
-    }}
-
-    main {{
-      width: min(1120px, calc(100% - 32px));
-      margin: 32px auto;
-      display: grid;
-      grid-template-columns: minmax(320px, 420px) 1fr;
-      gap: 24px;
-      align-items: start;
-    }}
-
-    h1 {{
-      margin: 0 0 16px;
-      font-size: 28px;
-      line-height: 1.15;
-    }}
-
-    form, .result {{
-      background: var(--panel);
-      border: 1px solid var(--line);
-      border-radius: 8px;
-      padding: 20px;
-    }}
-
-    label {{
-      display: block;
-      margin: 14px 0 6px;
-      color: var(--muted);
-      font-size: 13px;
-      font-weight: 650;
-    }}
-
-    input, select, textarea, button {{
-      width: 100%;
-      font: inherit;
-    }}
-
-    input, select, textarea {{
-      border: 1px solid var(--line);
-      border-radius: 6px;
-      padding: 10px 11px;
-      background: color-mix(in srgb, var(--panel) 94%, var(--bg));
-      color: var(--text);
-    }}
-
-    textarea {{
-      min-height: 110px;
-      resize: vertical;
-    }}
-
-    .grid {{
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 12px;
-    }}
-
-    .prompt-header {{
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 12px;
-      margin: 14px 0 6px;
-    }}
-
-    .prompt-header label {{
-      margin: 0;
-    }}
-
-    .checkbox {{
-      display: flex;
-      align-items: center;
-      gap: 10px;
-      margin-top: 14px;
-      color: var(--text);
-      font-size: 14px;
-      font-weight: 500;
-    }}
-
-    .checkbox input {{
-      width: auto;
-      min-width: 18px;
-      height: 18px;
-    }}
-
-    button {{
-      margin-top: 18px;
-      border: 0;
-      border-radius: 6px;
-      padding: 12px 14px;
-      background: var(--accent);
-      color: #06201d;
-      font-weight: 750;
-      cursor: pointer;
-    }}
-
-    button:hover {{
-      background: var(--accent-dark);
-    }}
-
-    button.secondary, .history-actions button {{
-      width: auto;
-      margin-top: 0;
-      padding: 8px 10px;
-      background: transparent;
-      border: 1px solid var(--line);
-      color: var(--text);
-      font-size: 13px;
-      font-weight: 650;
-    }}
-
-    button.secondary:hover, .history-actions button:hover {{
-      background: color-mix(in srgb, var(--panel) 78%, var(--accent));
-    }}
-
-    button.danger {{
-      color: var(--error-text);
-    }}
-
-    .alert {{
-      border-radius: 8px;
-      padding: 12px 14px;
-      margin-bottom: 16px;
-    }}
-
-    .alert ul {{
-      margin: 8px 0 0;
-      padding-left: 20px;
-    }}
-
-    .error {{
-      background: var(--error-bg);
-      color: var(--error-text);
-    }}
-
-    .ok {{
-      background: var(--ok-bg);
-      color: var(--ok-text);
-    }}
-
-    .result h2 {{
-      margin: 0 0 12px;
-      font-size: 20px;
-    }}
-
-    .meta {{
-      color: var(--muted);
-      font-size: 14px;
-      margin: 8px 0;
-      overflow-wrap: anywhere;
-    }}
-
-    img {{
-      display: block;
-      max-width: 100%;
-      height: auto;
-      margin-top: 16px;
-      border-radius: 8px;
-      border: 1px solid var(--line);
-      background: #fff;
-    }}
-
-    pre {{
-      max-height: 280px;
-      overflow: auto;
-      border: 1px solid var(--line);
-      border-radius: 6px;
-      padding: 12px;
-      background: color-mix(in srgb, var(--panel) 88%, #000);
-      white-space: pre-wrap;
-      overflow-wrap: anywhere;
-    }}
-
-    .progress-panel {{
-      background: var(--panel);
-      border: 1px solid var(--line);
-      border-radius: 8px;
-      padding: 20px;
-    }}
-
-    .progress-status {{
-      margin: 0 0 10px;
-      color: var(--muted);
-      font-size: 14px;
-      font-weight: 650;
-    }}
-
-    .progress-log {{
-      height: 320px;
-      overflow: auto;
-      border: 1px solid var(--line);
-      border-radius: 6px;
-      padding: 12px;
-      background: color-mix(in srgb, var(--panel) 88%, #000);
-      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-      font-size: 13px;
-      max-width: 100%;
-      white-space: pre-wrap;
-      overflow-x: hidden;
-      word-break: break-word;
-      overflow-wrap: anywhere;
-      user-select: text;
-    }}
-
-    .progress-result {{
-      margin-bottom: 16px;
-    }}
-
-    .modal {{
-      position: fixed;
-      inset: 0;
-      display: none;
-      place-items: center;
-      padding: 20px;
-      background: rgb(0 0 0 / 0.45);
-      z-index: 10;
-    }}
-
-    .modal[aria-hidden="false"] {{
-      display: grid;
-    }}
-
-    .modal-panel {{
-      width: min(760px, 100%);
-      max-height: min(680px, calc(100vh - 40px));
-      display: flex;
-      flex-direction: column;
-      background: var(--panel);
-      border: 1px solid var(--line);
-      border-radius: 8px;
-      overflow: hidden;
-    }}
-
-    .modal-header {{
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 12px;
-      padding: 16px 18px;
-      border-bottom: 1px solid var(--line);
-    }}
-
-    .modal-header h2 {{
-      margin: 0;
-      font-size: 18px;
-    }}
-
-    .history-list {{
-      padding: 12px;
-      overflow: auto;
-    }}
-
-    .history-item {{
-      display: grid;
-      grid-template-columns: 1fr auto;
-      gap: 12px;
-      align-items: start;
-      padding: 12px;
-      border-bottom: 1px solid var(--line);
-    }}
-
-    .history-item:last-child {{
-      border-bottom: 0;
-    }}
-
-    .history-text {{
-      margin: 0;
-      white-space: pre-wrap;
-      overflow-wrap: anywhere;
-    }}
-
-    .history-actions {{
-      display: flex;
-      gap: 8px;
-      align-items: center;
-    }}
-
-    .empty-history {{
-      margin: 0;
-      padding: 18px;
-      color: var(--muted);
-    }}
-
-    @media (max-width: 820px) {{
-      main {{
-        grid-template-columns: 1fr;
-        margin-top: 18px;
-      }}
-    }}
-  </style>
+  <link rel="stylesheet" href="/static/app.css{css_version}">
 </head>
 <body>
   <main>
@@ -928,18 +1084,31 @@ def page(values: dict[str, object] | None = None, result: dict[str, object] | No
 
         <div class="prompt-header">
           <label for="prompt">Prompt</label>
-          <button id="history-button" class="secondary" type="button">Prompt History</button>
+          <div class="history-actions">
+            <button id="history-button" class="secondary icon-button" type="button" aria-label="Prompt History" title="Prompt History">{svg_icon("history")}</button>
+            <button id="templates-button" class="secondary icon-button" type="button" aria-label="Prompt Templates" title="Prompt Templates">★</button>
+            <button id="outputs-button" class="secondary icon-button" type="button" aria-label="Output Images" title="Output Images">{svg_icon("image")}</button>
+            <button id="settings-button" class="secondary icon-button" type="button" aria-label="Settings" title="Settings">{svg_icon("settings")}</button>
+          </div>
         </div>
         <textarea id="prompt" name="prompt" required>{html.escape(str(values["prompt"]))}</textarea>
 
         <div class="grid">
           <div>
             <label for="width">Width</label>
-            <input id="width" name="width" type="number" min="64" max="2048" step="1" value="{html.escape(str(values["width"]))}">
+            <div class="dimension-row">
+              <input id="width" class="dimension-input" name="width" type="number" min="{MIN_DIMENSION}" max="{MAX_DIMENSION}" step="1" value="{html.escape(str(values["width"]))}">
+              <button class="dimension-action" data-dimension="width" data-factor="2" type="button" aria-label="Double width" title="Double width">x2</button>
+              <button class="dimension-action" data-dimension="width" data-factor="0.5" type="button" aria-label="Halve width" title="Halve width">/2</button>
+            </div>
           </div>
           <div>
             <label for="height">Height</label>
-            <input id="height" name="height" type="number" min="64" max="2048" step="1" value="{html.escape(str(values["height"]))}">
+            <div class="dimension-row">
+              <input id="height" class="dimension-input" name="height" type="number" min="{MIN_DIMENSION}" max="{MAX_DIMENSION}" step="1" value="{html.escape(str(values["height"]))}">
+              <button class="dimension-action" data-dimension="height" data-factor="2" type="button" aria-label="Double height" title="Double height">x2</button>
+              <button class="dimension-action" data-dimension="height" data-factor="0.5" type="button" aria-label="Halve height" title="Halve height">/2</button>
+            </div>
           </div>
         </div>
 
@@ -970,257 +1139,41 @@ def page(values: dict[str, object] | None = None, result: dict[str, object] | No
         <label for="filename_prefix">Output filename prefix</label>
         <input id="filename_prefix" name="filename_prefix" value="{html.escape(str(values["filename_prefix"]))}" placeholder="zimage">
 
+        <details class="advanced-section">
+          <summary>Advanced parameters</summary>
+          <div class="advanced-content">
+
+            <div class="advanced-field" data-for-models="zimage-base,flux2-9B,flux2-9B-lora,flux2-9B-face">
+              <label for="guidance">Guidance</label>
+              <input id="guidance" name="guidance" type="number" step="0.1" min="0" max="20" placeholder="auto">
+            </div>
+
+            <div class="advanced-field" data-for-models="zimage,zimage-base,flux2-9B-lora,qwen">
+              <label for="lora_scale">LoRA Scale</label>
+              <input id="lora_scale" name="lora_scale" type="number" step="0.05" min="0" max="2" placeholder="auto">
+            </div>
+
+            <div class="advanced-field" data-for-models="qwen,qwen-2512">
+              <label for="negative_prompt">Negative Prompt</label>
+              <textarea id="negative_prompt" name="negative_prompt" rows="2" placeholder="Leave empty to use model default"></textarea>
+            </div>
+
+          </div>
+        </details>
+
         <button id="generate-button" type="submit">Generate Image</button>
       </form>
     </section>
     <div id="result-slot">{result_html}</div>
   </main>
-  <div id="history-modal" class="modal" aria-hidden="true">
-    <section class="modal-panel" role="dialog" aria-modal="true" aria-labelledby="history-title">
-      <div class="modal-header">
-        <h2 id="history-title">Prompt History</h2>
-        <button id="history-close" class="secondary" type="button">Close</button>
-      </div>
-      <div id="history-list" class="history-list">
-        <p class="empty-history">No prompts saved yet.</p>
-      </div>
-    </section>
-  </div>
-  <script>
-    const modelDefaults = {client_defaults_json};
-    const modelSelect = document.getElementById("model");
-    const promptInput = document.getElementById("prompt");
-    const widthInput = document.getElementById("width");
-    const heightInput = document.getElementById("height");
-    const stepsInput = document.getElementById("steps");
-    const filenamePrefixInput = document.getElementById("filename_prefix");
-    const upscaleResolutionInput = document.getElementById("upscale_resolution");
-    const form = document.getElementById("generator-form");
-    const formErrors = document.getElementById("form-errors");
-    const resultSlot = document.getElementById("result-slot");
-    const button = document.getElementById("generate-button");
-    const historyButton = document.getElementById("history-button");
-    const historyModal = document.getElementById("history-modal");
-    const historyClose = document.getElementById("history-close");
-    const historyList = document.getElementById("history-list");
+  {render_history_modal()}
+  {render_templates_modal()}
+  {render_outputs_modal()}
+  {render_settings_modal()}
+  {render_compare_modal()}
 
-    function openHistoryModal() {{
-      historyModal.setAttribute("aria-hidden", "false");
-      loadPromptHistory();
-    }}
-
-    function closeHistoryModal() {{
-      historyModal.setAttribute("aria-hidden", "true");
-    }}
-
-    function renderPromptHistory(prompts) {{
-      historyList.textContent = "";
-      if (!prompts.length) {{
-        const empty = document.createElement("p");
-        empty.className = "empty-history";
-        empty.textContent = "No prompts saved yet.";
-        historyList.appendChild(empty);
-        return;
-      }}
-
-      for (const prompt of prompts) {{
-        const item = document.createElement("article");
-        item.className = "history-item";
-
-        const text = document.createElement("p");
-        text.className = "history-text";
-        text.textContent = prompt;
-
-        const actions = document.createElement("div");
-        actions.className = "history-actions";
-
-        const useButton = document.createElement("button");
-        useButton.type = "button";
-        useButton.textContent = "Use";
-        useButton.addEventListener("click", () => {{
-          promptInput.value = prompt;
-          promptInput.focus();
-          closeHistoryModal();
-        }});
-
-        const deleteButton = document.createElement("button");
-        deleteButton.type = "button";
-        deleteButton.className = "danger";
-        deleteButton.textContent = "Del";
-        deleteButton.addEventListener("click", async () => {{
-          deleteButton.disabled = true;
-          const formData = new FormData();
-          formData.append("prompt", prompt);
-          const response = await fetch("/prompt-history/delete", {{
-            method: "POST",
-            body: formData,
-          }});
-          const data = await response.json();
-          renderPromptHistory(data.prompts || []);
-        }});
-
-        actions.append(useButton, deleteButton);
-        item.append(text, actions);
-        historyList.appendChild(item);
-      }}
-    }}
-
-    async function loadPromptHistory() {{
-      const response = await fetch("/prompt-history");
-      const data = await response.json();
-      renderPromptHistory(data.prompts || []);
-    }}
-
-    function updateUpscalePlaceholder() {{
-      const width = Number.parseInt(widthInput.value || "512", 10);
-      const height = Number.parseInt(heightInput.value || "512", 10);
-      const shortSide = Math.min(
-        Number.isFinite(width) ? width : 512,
-        Number.isFinite(height) ? height : 512
-      );
-      upscaleResolutionInput.placeholder = String(shortSide * 2);
-    }}
-
-    modelSelect.addEventListener("change", () => {{
-      const defaults = modelDefaults[modelSelect.value] || modelDefaults.zimage;
-      stepsInput.value = defaults.steps;
-      filenamePrefixInput.value = defaults.filenamePrefix;
-    }});
-
-    widthInput.addEventListener("input", updateUpscalePlaceholder);
-    heightInput.addEventListener("input", updateUpscalePlaceholder);
-    updateUpscalePlaceholder();
-
-    function renderFormErrors(errors) {{
-      if (!errors.length) {{
-        formErrors.textContent = "";
-        return;
-      }}
-
-      const wrapper = document.createElement("div");
-      wrapper.className = "alert error";
-      const strong = document.createElement("strong");
-      strong.textContent = "Fix these fields:";
-      const list = document.createElement("ul");
-      for (const error of errors) {{
-        const item = document.createElement("li");
-        item.textContent = error;
-        list.appendChild(item);
-      }}
-      wrapper.append(strong, list);
-      formErrors.textContent = "";
-      formErrors.appendChild(wrapper);
-    }}
-
-    function resetGenerateButton() {{
-      button.disabled = false;
-      button.textContent = "Generate Image";
-    }}
-
-    function createProgressPanel() {{
-      resultSlot.innerHTML = `
-        <section class="progress-panel">
-          <h2>Progress</h2>
-          <div id="progress-result" class="progress-result"></div>
-          <p id="progress-status" class="progress-status">Queued...</p>
-          <div id="progress-log" class="progress-log" role="log" aria-live="polite"></div>
-        </section>
-      `;
-    }}
-
-    function appendProgressLine(message) {{
-      const log = document.getElementById("progress-log");
-      if (!log) {{
-        return;
-      }}
-      log.textContent += `${{message}}\n`;
-      log.scrollTop = log.scrollHeight;
-    }}
-
-    function setProgressStatus(message) {{
-      const status = document.getElementById("progress-status");
-      if (status) {{
-        status.textContent = message;
-      }}
-    }}
-
-    function connectJobStream(jobId) {{
-      const protocol = window.location.protocol === "https:" ? "wss" : "ws";
-      const socket = new WebSocket(`${{protocol}}://${{window.location.host}}/jobs/${{jobId}}/stream`);
-
-      socket.addEventListener("message", (event) => {{
-        const data = JSON.parse(event.data);
-        if (data.type === "status") {{
-          setProgressStatus(data.message || data.status || "Working...");
-        }} else if (data.type === "log") {{
-          const phase = data.phase ? `[${{data.phase}}] ` : "";
-          if (data.stream === "command") {{
-            appendProgressLine(`${{phase}}command started`);
-            return;
-          }}
-          const stream = data.stream ? `${{data.stream}}: ` : "";
-          appendProgressLine(`${{phase}}${{stream}}${{data.message || ""}}`);
-        }} else if (data.type === "done" || data.type === "error") {{
-          const target = document.getElementById("progress-result");
-          if (target) {{
-            target.innerHTML = data.result_html || "";
-          }} else {{
-            resultSlot.innerHTML = data.result_html || "";
-          }}
-          setProgressStatus(data.type === "done" ? "Finished." : "Finished with errors.");
-          resetGenerateButton();
-          socket.close();
-        }}
-      }});
-
-      socket.addEventListener("close", () => {{
-        if (button.disabled) {{
-          appendProgressLine("Progress connection closed.");
-          resetGenerateButton();
-        }}
-      }});
-
-      socket.addEventListener("error", () => {{
-        appendProgressLine("Progress connection error.");
-        resetGenerateButton();
-      }});
-    }}
-
-    form.addEventListener("submit", async (event) => {{
-      event.preventDefault();
-      renderFormErrors([]);
-      button.disabled = true;
-      button.textContent = "Generating...";
-      createProgressPanel();
-
-      const response = await fetch("/generate", {{
-        method: "POST",
-        body: new FormData(form),
-      }});
-      const data = await response.json();
-      if (!response.ok || data.errors) {{
-        renderFormErrors(data.errors || ["Generation could not start."]);
-        resultSlot.innerHTML = `<section class="result"><h2>Result</h2><p class="meta">Generated images will appear here after the command finishes.</p></section>`;
-        resetGenerateButton();
-        return;
-      }}
-
-      connectJobStream(data.job_id);
-    }});
-
-    historyButton.addEventListener("click", openHistoryModal);
-    historyClose.addEventListener("click", closeHistoryModal);
-    historyModal.addEventListener("click", (event) => {{
-      if (event.target === historyModal) {{
-        closeHistoryModal();
-      }}
-    }});
-    document.addEventListener("keydown", (event) => {{
-      if (event.key === "Escape") {{
-        closeHistoryModal();
-      }}
-    }});
-  </script>
+  {config_script}
+  <script src="/static/app.js{js_version}"></script>
 </body>
 </html>"""
     return document
@@ -1242,12 +1195,46 @@ def render_result(result: dict[str, object] | None, values: dict[str, object]) -
     if result.get("success"):
         image_url = html.escape(str(result.get("image_url", "")))
         upscale_html = render_upscale_result(result.get("upscale"))
-        return f"""<section class="result">
+
+        result_data = {
+            "model": str(values.get("model", "")),
+            "prompt": str(values.get("prompt", "")),
+            "width": values.get("width"),
+            "height": values.get("height"),
+            "steps": values.get("steps"),
+            "seed": values.get("seed"),
+            "random_seed": bool(values.get("random_seed")),
+            "filename_prefix": str(values.get("filename_prefix", "")),
+            "upscale_enabled": bool(values.get("upscale_enabled")),
+            "upscale_resolution": values.get("upscale_resolution"),
+            "guidance": values.get("guidance"),
+            "lora_scale": values.get("lora_scale"),
+            "negative_prompt": values.get("negative_prompt"),
+            "image_url": str(result.get("image_url", "")),
+            "upscaled_image_url": str(result.get("upscale", {}).get("image_url", "")) if result.get("upscale") and result.get("upscale").get("success") else "",
+        }
+        result_data_json = html.escape(json.dumps(result_data), quote=True)
+
+        has_upscale = bool(result.get("upscale") and result.get("upscale").get("success"))
+        compare_button = '<button type="button" class="secondary" data-action="compare">Compare</button>' if has_upscale else ''
+
+        action_html = (
+            '<div class="result-actions">'
+            '<button type="button" class="secondary" data-action="remix">Remix (same settings)</button>'
+            '<button type="button" class="secondary" data-action="remix-new-seed">Remix (new seed)</button>'
+            '<button type="button" class="secondary" data-action="copy-prompt">Copy Prompt</button>'
+            '<button type="button" class="secondary" data-action="copy-seed">Copy Seed</button>'
+            + compare_button +
+            '</div>'
+        )
+
+        return f"""<section class="result" data-result="{result_data_json}">
       <h2>Result</h2>
       <div class="alert ok">Image generated successfully.</div>
       <p class="meta"><strong>Model:</strong> {html.escape(str(values.get("model", "")))}</p>
       <p class="meta"><strong>Seed:</strong> {html.escape(str(values.get("seed", "")))}</p>
       <p class="meta"><strong>Output:</strong> {html.escape(str(output_path))}</p>
+      {action_html}
       <img src="{image_url}" alt="Generated image">
       {upscale_html}
       {render_log("Generate Command", command_text)}
@@ -1296,6 +1283,151 @@ def render_log(title: str, text: str) -> str:
     return f"<h3>{html.escape(title)}</h3><pre>{html.escape(text)}</pre>"
 
 
+def render_history_modal() -> str:
+    return f'''<div id="history-modal" class="modal" aria-hidden="true">
+    <section class="modal-panel" role="dialog" aria-modal="true" aria-labelledby="history-title">
+      <div class="modal-header">
+        <h2 id="history-title">Prompt History</h2>
+        <button id="history-close" class="secondary icon-button" type="button" aria-label="Close prompt history" title="Close prompt history">{svg_icon("close")}</button>
+      </div>
+      <div id="history-list" class="history-list">
+        <p class="empty-history">No prompts saved yet.</p>
+      </div>
+    </section>
+  </div>'''
+
+
+def render_templates_modal() -> str:
+    return '''<div id="templates-modal" class="modal" aria-hidden="true">
+    <section class="modal-panel" role="dialog" aria-modal="true" aria-labelledby="templates-title">
+      <div class="modal-header">
+        <h2 id="templates-title">Prompt Templates</h2>
+        <button id="templates-close" class="secondary icon-button" type="button" aria-label="Close templates" title="Close templates">''' + svg_icon("close") + '''</button>
+      </div>
+      <div style="padding: 8px 18px; border-bottom:1px solid var(--line);">
+        <input id="templates-search" type="text" placeholder="Search name or prompt..." style="width:100%;">
+      </div>
+      <div style="padding: 12px 18px; display:flex; gap:8px; align-items:center; border-bottom:1px solid var(--line);">
+        <button id="save-template-btn" class="secondary" type="button">Save Current as Template</button>
+        <span style="font-size:12px; color:var(--muted);">Saves prompt + main settings</span>
+      </div>
+      <div id="templates-list" class="history-list" style="max-height: 380px;">
+        <p class="empty-history">No templates saved yet.</p>
+      </div>
+    </section>
+  </div>'''
+
+
+def render_outputs_modal() -> str:
+    return f'''<div id="outputs-modal" class="modal" aria-hidden="true">
+    <section class="modal-panel" role="dialog" aria-modal="true" aria-labelledby="outputs-title">
+      <div class="modal-header">
+        <h2 id="outputs-title">Output Images</h2>
+        <button id="outputs-close" class="secondary icon-button" type="button" aria-label="Close output images" title="Close output images">{svg_icon("close")}</button>
+      </div>
+
+      <div class="gallery-toolbar">
+        <input id="gallery-search" type="text" placeholder="Search filename or prefix..." aria-label="Search images">
+        <div class="gallery-filters">
+          <button type="button" class="gallery-filter active" data-filter="all">All</button>
+          <button type="button" class="gallery-filter" data-filter="flux">Flux</button>
+          <button type="button" class="gallery-filter" data-filter="zimage">Z-Image</button>
+          <button type="button" class="gallery-filter" data-filter="qwen">Qwen</button>
+          <button type="button" class="gallery-filter" data-filter="upscaled">Upscaled</button>
+        </div>
+        <div id="gallery-stats" class="gallery-stats"></div>
+      </div>
+
+      <div id="outputs-list" class="image-list">
+        <p class="empty-history">No images found.</p>
+      </div>
+
+      <div class="gallery-actions-bar">
+        <button id="gallery-refresh" type="button" class="secondary gallery-action">Refresh</button>
+        <button id="gallery-bulk-delete" type="button" class="secondary danger gallery-action gallery-action-wide" disabled>Delete Selected</button>
+        <button id="gallery-compare" type="button" class="secondary gallery-action" disabled>Compare Selected</button>
+      </div>
+    </section>
+  </div>'''
+
+
+def render_settings_modal() -> str:
+    return f'''<div id="settings-modal" class="modal" aria-hidden="true">
+    <section class="modal-panel" role="dialog" aria-modal="true" aria-labelledby="settings-title">
+      <div class="modal-header">
+        <h2 id="settings-title">Settings</h2>
+        <button id="settings-close" class="secondary icon-button" type="button" aria-label="Close settings" title="Close settings">{svg_icon("close")}</button>
+      </div>
+      <div style="padding: 16px 18px; display: grid; gap: 18px;">
+        <div>
+          <label style="display:block; margin-bottom:6px; font-weight:650; color:var(--muted);">Theme</label>
+          <div style="display:flex; gap:8px;">
+            <button type="button" class="secondary theme-btn" data-theme="light">Light</button>
+            <button type="button" class="secondary theme-btn" data-theme="dark">Dark</button>
+            <button type="button" class="secondary theme-btn" data-theme="system">System</button>
+          </div>
+        </div>
+
+        <div>
+          <label for="default-model" style="display:block; margin-bottom:6px; font-weight:650; color:var(--muted);">Default Model</label>
+          <select id="default-model" style="width:100%;"></select>
+        </div>
+
+        <label class="checkbox" style="margin:0;">
+          <input id="auto-open-gallery" type="checkbox" value="1">
+          Auto-open gallery after successful generation
+        </label>
+
+        <div style="font-size:12px; color:var(--muted); border-top:1px solid var(--line); padding-top:12px;">
+          Keyboard shortcuts<br>
+          <strong>Ctrl/Cmd + Enter</strong> — Generate<br>
+          <strong>g</strong> — Focus prompt<br>
+          <strong>/</strong> — Open gallery<br>
+          <strong>h</strong> — Prompt history<br>
+          <strong>Esc</strong> — Close modals
+        </div>
+      </div>
+      <div style="padding:12px 18px; border-top:1px solid var(--line); display:flex; justify-content:flex-end; gap:8px;">
+        <button id="settings-save" type="button">Save &amp; Close</button>
+      </div>
+    </section>
+  </div>'''
+
+
+def render_compare_modal() -> str:
+    return f'''<div id="compare-modal" class="modal" aria-hidden="true">
+    <section class="modal-panel compare-panel" role="dialog" aria-modal="true" aria-labelledby="compare-title">
+      <div class="modal-header">
+        <h2 id="compare-title">Comparison</h2>
+        <button id="compare-close" class="secondary icon-button" type="button" aria-label="Close comparison" title="Close comparison">{svg_icon("close")}</button>
+      </div>
+
+      <div class="compare-body">
+        <div id="compare-slider-container" class="compare-slider-container">
+          <img id="compare-image-a" class="compare-image" alt="Original">
+          <div id="compare-image-b-wrapper" class="compare-image-b-wrapper">
+            <img id="compare-image-b" class="compare-image" alt="Upscaled / Compared">
+          </div>
+          <div id="compare-handle" class="compare-handle">
+            <div class="compare-handle-line"></div>
+            <div class="compare-handle-knob"></div>
+          </div>
+        </div>
+
+        <div class="compare-labels">
+          <div id="compare-label-a">Original</div>
+          <div id="compare-label-b">Upscaled</div>
+        </div>
+      </div>
+
+      <div class="compare-footer">
+        <button id="compare-swap" type="button" class="secondary">Swap Sides</button>
+        <button id="compare-reset" type="button" class="secondary">Reset Slider</button>
+      </div>
+    </section>
+  </div>'''
+
+
 @app.get("/")
 async def index() -> Response:
     return Response(page(), content_type="text/html; charset=utf-8")
@@ -1309,6 +1441,7 @@ async def generate():
     if errors:
         return jsonify({"errors": errors}), 400
 
+    await asyncio.to_thread(save_form_dimensions, int(values["width"]), int(values["height"]))
     job_id = uuid.uuid4().hex
     job: dict[str, object] = {
         "id": job_id,
@@ -1321,6 +1454,37 @@ async def generate():
     await set_job_status(job, "queued", "queued", "Queued...")
     asyncio.create_task(run_job(job_id))
     return jsonify({"job_id": job_id})
+
+
+@app.post("/form-state/dimensions")
+async def form_state_dimensions():
+    form_data = await request.form
+    try:
+        width = validate_dimension(form_data.get("width", ""), "Width")
+        height = validate_dimension(form_data.get("height", ""), "Height")
+        state = await asyncio.to_thread(save_form_dimensions, width, height)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    return jsonify(state)
+
+
+@app.get("/settings")
+async def get_settings():
+    settings = await asyncio.to_thread(load_ui_settings)
+    return jsonify(settings)
+
+
+@app.post("/settings")
+async def save_settings():
+    form_data = await request.form
+    incoming = {k: form_data.get(k) for k in form_data}
+    # Coerce some booleans
+    for key in ("auto_open_gallery_on_success", "show_advanced_by_default"):
+        if key in incoming:
+            incoming[key] = incoming[key] in ("1", "true", "on", "yes")
+
+    saved = await asyncio.to_thread(save_ui_settings, incoming)
+    return jsonify(saved)
 
 
 @app.websocket("/jobs/<job_id>/stream")
@@ -1378,14 +1542,139 @@ async def prompt_history_delete():
     return jsonify({"prompts": prompts})
 
 
+@app.get("/prompt-templates")
+async def prompt_templates():
+    templates = await asyncio.to_thread(load_prompt_templates)
+    return jsonify({"templates": templates})
+
+
+@app.post("/prompt-templates")
+async def prompt_templates_save():
+    form_data = await request.form
+    template = {
+        "name": form_data.get("name", "").strip(),
+        "prompt": form_data.get("prompt", ""),
+        "model": form_data.get("model", ""),
+        "width": int(form_data.get("width") or 512),
+        "height": int(form_data.get("height") or 512),
+        "steps": int(form_data.get("steps") or 9),
+        "seed": int(form_data.get("seed") or 42),
+        "random_seed": form_data.get("random_seed") == "1",
+        "guidance": form_data.get("guidance") or None,
+        "lora_scale": form_data.get("lora_scale") or None,
+        "negative_prompt": form_data.get("negative_prompt", ""),
+        "upscale_enabled": form_data.get("upscale_enabled") == "1",
+        "upscale_resolution": int(form_data.get("upscale_resolution") or 1024),
+        "filename_prefix": form_data.get("filename_prefix", ""),
+    }
+    templates = await asyncio.to_thread(add_prompt_template, template)
+    return jsonify({"templates": templates})
+
+
+@app.post("/prompt-templates/delete")
+async def prompt_templates_delete():
+    form_data = await request.form
+    templates = await asyncio.to_thread(delete_prompt_template, form_data.get("name", ""))
+    return jsonify({"templates": templates})
+
+
+@app.post("/prompt-templates/rename")
+async def prompt_templates_rename():
+    form_data = await request.form
+    old_name = form_data.get("old_name", "")
+    new_name = form_data.get("new_name", "")
+    templates = await asyncio.to_thread(rename_prompt_template, old_name, new_name)
+    return jsonify({"templates": templates})
+
+
+@app.post("/jobs/<job_id>/cancel")
+async def cancel_job_endpoint(job_id: str):
+    job = JOBS.get(job_id)
+    if not job:
+        return jsonify({"error": "Job not found"}), 404
+
+    cancelled = await cancel_job(job)
+    return jsonify({"cancelled": cancelled, "status": job.get("status")})
+
+
+@app.get("/output-images")
+async def output_images():
+    images = await asyncio.to_thread(list_output_images)
+    return jsonify({"images": images})
+
+
+@app.post("/output-images/delete")
+async def output_images_delete():
+    form_data = await request.form
+    filename = form_data.get("filename", "")
+    try:
+        images = await asyncio.to_thread(delete_output_image, filename)
+    except FileNotFoundError as exc:
+        images = await asyncio.to_thread(list_output_images)
+        return jsonify({"error": str(exc), "images": images}), 404
+    except ValueError as exc:
+        images = await asyncio.to_thread(list_output_images)
+        return jsonify({"error": str(exc), "images": images}), 400
+    return jsonify({"images": images})
+
+
+@app.post("/output-images/upscale")
+async def output_images_upscale():
+    """Trigger a standalone upscale of an existing output image (from gallery)."""
+    form_data = await request.form
+    filename = form_data.get("filename", "").strip()
+    resolution_raw = form_data.get("resolution", "").strip()
+
+    if not filename:
+        return jsonify({"error": "filename is required"}), 400
+
+    try:
+        src_path = safe_output_image_path(filename)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+    if not src_path.exists():
+        return jsonify({"error": "Image not found"}), 404
+
+    # Determine target resolution (reuse the same default logic as the form)
+    try:
+        if resolution_raw:
+            resolution = parse_int(resolution_raw, "Resolution", 64, 8192)
+        else:
+            # Default: 2x the short side (same as UI default_upscale_resolution)
+            stat = src_path.stat()
+            # We don't have width/height, so fall back to a reasonable default or read via PIL if available.
+            # For simplicity, use 1024 as a common nice target if we can't infer.
+            resolution = 1024
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+    # Create a job so we can stream progress exactly like generation
+    job_id = uuid.uuid4().hex
+    job: dict[str, object] = {
+        "id": job_id,
+        "status": "queued",
+        "values": {"type": "standalone-upscale", "source": filename},
+        "messages": [],
+        "queue": asyncio.Queue(),
+    }
+    JOBS[job_id] = job
+    await set_job_status(job, "queued", "queued", "Queued...")
+
+    # Fire the upscale in the background
+    asyncio.create_task(run_upscale_only(job_id, src_path, resolution))
+
+    return jsonify({"job_id": job_id})
+
+
 @app.get("/outputs/<path:filename>")
 async def output_file(filename: str):
-    if "/" in filename or "\\" in filename:
+    try:
+        path = safe_output_image_path(filename)
+    except ValueError:
         abort(404)
 
-    path = (OUTPUTS_DIR / Path(filename).name).resolve()
-    outputs_root = OUTPUTS_DIR.resolve()
-    if outputs_root not in path.parents or not path.exists() or not path.is_file():
+    if not path.exists() or not path.is_file():
         abort(404)
 
     return await send_file(path)

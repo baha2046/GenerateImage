@@ -1,0 +1,6 @@
+{
+  "theme": "dark",
+  "default_model": "zimage",
+  "auto_open_gallery_on_success": true,
+  "show_advanced_by_default": false
+}

@@ -1,0 +1,1 @@
+/Users/ericchan/Project/image/.venv/bin/python /Users/ericchan/Project/image/app.py
