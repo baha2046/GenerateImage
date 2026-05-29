@@ -75,11 +75,6 @@ body {
 }
 
 main {
-  width: min(1120px, calc(100% - 32px));
-  margin: 32px auto;
-  display: grid;
-  grid-template-columns: minmax(320px, 420px) 1fr;
-  gap: 24px;
   align-items: start;
 }
 

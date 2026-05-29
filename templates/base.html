@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en"
+      {% if initial_theme == "dark" %}data-theme="dark" class="dark"
+      {% elif initial_theme == "light" %}data-theme="light"
+      {% endif %}>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}Local Image Generator{% endblock %}</title>
+  <!-- Tailwind Play CDN for modern utility-first styling (Phase C renewal) -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    // Tailwind config matching the spirit of the old design tokens (teal accent, good dark mode)
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          colors: {
+            accent: {
+              DEFAULT: '#0f766e',
+              dark: '#115e59',
+            }
+          }
+        }
+      }
+    };
+  </script>
+  <link rel="stylesheet" href="/static/app.css{{ css_version or '' }}">
+  {% block head %}{% endblock %}
+</head>
+<body class="bg-[#f7f7f4] dark:bg-[#111514] text-[#1e2428] dark:text-[#edf3f1]">
+  <main class="w-full max-w-[1400px] mx-auto px-4 py-8">
+    {% block content %}{% endblock %}
+  </main>
+
+  {% block modals %}{% endblock %}
+
+  <script src="/static/app.js{{ js_version or '' }}"></script>
+  {% block scripts %}{% endblock %}
+</body>
+</html>

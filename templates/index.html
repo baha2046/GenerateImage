@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+
+{% block title %}MFLUX • Renewed{% endblock %}
+
+{# css_version and js_version are consumed by base.html for cache-busting #}
+
+{% block content %}
+  {% if show_renewed_form %}
+    {# Phase C visual renewal — generator form + result area (user priority) #}
+    <div class="max-w-[1400px] mx-auto w-full">
+      <div class="grid grid-cols-1 lg:grid-cols-[440px,minmax(0,1fr)] gap-6 items-start">
+        {# Renewed form (Tailwind, modern, preserves all old IDs + JS hooks) #}
+        <div>
+          {# Pass real server-computed values + model options so the pulldown and form work #}
+          {% include "components/generator_form_renewed.html" %}
+        </div>
+
+        {# Result area — still uses the existing render_result() output for full compatibility #}
+        <div id="result-slot" class="w-full">
+          {{ result_html | safe }}
+        </div>
+      </div>
+    </div>
+  {% else %}
+    {# Fallback / legacy full injection path #}
+    {{ full_html | safe }}
+  {% endif %}
+{% endblock %}
+
+{% block modals %}
+  {# Always render modals in renewed mode (they are pre-built by the route) #}
+  {{ history_modal | safe }}
+  {{ templates_modal | safe }}
+  {{ outputs_modal | safe }}
+  {{ settings_modal | safe }}
+  {{ compare_modal | safe }}
+
+  {# Config script with icons for the header buttons + JS features #}
+  {{ config_script | safe }}
+{% endblock %}
+
+{% block scripts %}
+  {# The main app.js is already in base.html. We just need the per-request versions if we want to override. #}
+{% endblock %}

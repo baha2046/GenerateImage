@@ -521,12 +521,14 @@ name = "image"
 version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
+    { name = "jinja2" },
     { name = "mflux" },
     { name = "quart" },
 ]
 
 [package.metadata]
 requires-dist = [
+    { name = "jinja2", specifier = ">=3.1.6" },
     { name = "mflux", specifier = ">=0.17.5" },
     { name = "quart", specifier = ">=0.20.0" },
 ]

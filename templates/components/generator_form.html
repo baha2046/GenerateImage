@@ -1,0 +1,85 @@
+<form id="generator-form" method="post" action="/generate">
+        <label for="model">Model</label>
+        <select id="model" name="model">{{ model_options | safe }}</select>
+
+        <div class="prompt-header">
+          <label for="prompt">Prompt</label>
+          <div class="history-actions">
+            <button id="history-button" class="secondary icon-button" type="button" aria-label="Prompt History" title="Prompt History">{{ svg_icon("history") | safe }}</button>
+            <button id="templates-button" class="secondary icon-button" type="button" aria-label="Prompt Templates" title="Prompt Templates">★</button>
+            <button id="outputs-button" class="secondary icon-button" type="button" aria-label="Output Images" title="Output Images">{{ svg_icon("image") | safe }}</button>
+            <button id="settings-button" class="secondary icon-button" type="button" aria-label="Settings" title="Settings">{{ svg_icon("settings") | safe }}</button>
+          </div>
+        </div>
+        <textarea id="prompt" name="prompt" required>{{ values["prompt"] | e }}</textarea>
+
+        <div class="grid">
+          <div>
+            <label for="width">Width</label>
+            <div class="dimension-row">
+              <input id="width" class="dimension-input" name="width" type="number" min="{{ MIN_DIMENSION }}" max="{{ MAX_DIMENSION }}" step="1" value="{{ values['width'] }}">
+              <button class="dimension-action" data-dimension="width" data-factor="2" type="button" aria-label="Double width" title="Double width">x2</button>
+              <button class="dimension-action" data-dimension="width" data-factor="0.5" type="button" aria-label="Halve width" title="Halve width">/2</button>
+            </div>
+          </div>
+          <div>
+            <label for="height">Height</label>
+            <div class="dimension-row">
+              <input id="height" class="dimension-input" name="height" type="number" min="{{ MIN_DIMENSION }}" max="{{ MAX_DIMENSION }}" step="1" value="{{ values['height'] }}">
+              <button class="dimension-action" data-dimension="height" data-factor="2" type="button" aria-label="Double height" title="Double height">x2</button>
+              <button class="dimension-action" data-dimension="height" data-factor="0.5" type="button" aria-label="Halve height" title="Halve height">/2</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="grid">
+          <div>
+            <label for="seed">Seed</label>
+            <input id="seed" name="seed" type="number" min="0" max="{{ 2**32 - 1 }}" step="1" value="{{ values['seed'] }}">
+          </div>
+          <div>
+            <label for="steps">Steps</label>
+            <input id="steps" name="steps" type="number" min="1" max="100" step="1" value="{{ values['steps'] }}">
+          </div>
+        </div>
+
+        <label class="checkbox">
+          <input type="checkbox" name="random_seed" value="1" {{ 'checked' if values.get('random_seed') else '' }}>
+          Use random seed
+        </label>
+
+        <label class="checkbox">
+          <input id="upscale_enabled" type="checkbox" name="upscale_enabled" value="1" {{ 'checked' if values.get('upscale_enabled') else '' }}>
+          Upscale result image
+        </label>
+
+        <label for="upscale_resolution">Upscale resolution</label>
+        <input id="upscale_resolution" name="upscale_resolution" type="number" min="64" max="8192" step="1" value="{{ values.get('upscale_resolution_raw', '') }}" placeholder="{{ values.get('upscale_resolution', 1024) }}">
+
+        <label for="filename_prefix">Output filename prefix</label>
+        <input id="filename_prefix" name="filename_prefix" value="{{ values.get('filename_prefix', '') }}" placeholder="zimage">
+
+        <details class="advanced-section" {% if show_advanced_by_default %}open{% endif %}>
+          <summary>Advanced parameters</summary>
+          <div class="advanced-content">
+
+            <div class="advanced-field" data-for-models="zimage-base,flux2-9B,flux2-9B-lora,flux2-9B-face">
+              <label for="guidance">Guidance</label>
+              <input id="guidance" name="guidance" type="number" step="0.1" min="0" max="20" placeholder="auto" value="{{ values.get('guidance') or '' }}">
+            </div>
+
+            <div class="advanced-field" data-for-models="zimage,zimage-base,flux2-9B-lora,qwen">
+              <label for="lora_scale">LoRA Scale</label>
+              <input id="lora_scale" name="lora_scale" type="number" step="0.05" min="0" max="2" placeholder="auto" value="{{ values.get('lora_scale') or '' }}">
+            </div>
+
+            <div class="advanced-field" data-for-models="qwen,qwen-2512">
+              <label for="negative_prompt">Negative Prompt</label>
+              <textarea id="negative_prompt" name="negative_prompt" rows="2" placeholder="Leave empty to use model default">{{ values.get('negative_prompt') or '' }}</textarea>
+            </div>
+
+          </div>
+        </details>
+
+        <button id="generate-button" type="submit">Generate Image</button>
+      </form>

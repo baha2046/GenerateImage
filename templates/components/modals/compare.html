@@ -1,0 +1,31 @@
+<div id="compare-modal" class="modal" aria-hidden="true">
+    <section class="modal-panel compare-panel" role="dialog" aria-modal="true" aria-labelledby="compare-title">
+      <div class="modal-header">
+        <h2 id="compare-title">Comparison</h2>
+        <button id="compare-close" class="secondary icon-button" type="button" aria-label="Close comparison" title="Close comparison">{{ svg_icon("close") | safe }}</button>
+      </div>
+
+      <div class="compare-body">
+        <div id="compare-slider-container" class="compare-slider-container">
+          <img id="compare-image-a" class="compare-image" alt="Original">
+          <div id="compare-image-b-wrapper" class="compare-image-b-wrapper">
+            <img id="compare-image-b" class="compare-image" alt="Upscaled / Compared">
+          </div>
+          <div id="compare-handle" class="compare-handle">
+            <div class="compare-handle-line"></div>
+            <div class="compare-handle-knob"></div>
+          </div>
+        </div>
+
+        <div class="compare-labels">
+          <div id="compare-label-a">Original</div>
+          <div id="compare-label-b">Upscaled</div>
+        </div>
+      </div>
+
+      <div class="compare-footer">
+        <button id="compare-swap" type="button" class="secondary">Swap Sides</button>
+        <button id="compare-reset" type="button" class="secondary">Reset Slider</button>
+      </div>
+    </section>
+  </div>

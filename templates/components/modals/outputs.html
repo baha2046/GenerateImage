@@ -1,0 +1,30 @@
+<div id="outputs-modal" class="modal" aria-hidden="true">
+    <section class="modal-panel" role="dialog" aria-modal="true" aria-labelledby="outputs-title">
+      <div class="modal-header">
+        <h2 id="outputs-title">Output Images</h2>
+        <button id="outputs-close" class="secondary icon-button" type="button" aria-label="Close output images" title="Close output images">{{ svg_icon("close") | safe }}</button>
+      </div>
+
+      <div class="gallery-toolbar">
+        <input id="gallery-search" type="text" placeholder="Search filename or prefix..." aria-label="Search images">
+        <div class="gallery-filters">
+          <button type="button" class="gallery-filter active" data-filter="all">All</button>
+          <button type="button" class="gallery-filter" data-filter="flux">Flux</button>
+          <button type="button" class="gallery-filter" data-filter="zimage">Z-Image</button>
+          <button type="button" class="gallery-filter" data-filter="qwen">Qwen</button>
+          <button type="button" class="gallery-filter" data-filter="upscaled">Upscaled</button>
+        </div>
+        <div id="gallery-stats" class="gallery-stats"></div>
+      </div>
+
+      <div id="outputs-list" class="image-list">
+        <p class="empty-history">No images found.</p>
+      </div>
+
+      <div class="gallery-actions-bar">
+        <button id="gallery-refresh" type="button" class="secondary gallery-action">Refresh</button>
+        <button id="gallery-bulk-delete" type="button" class="secondary danger gallery-action gallery-action-wide" disabled>Delete Selected</button>
+        <button id="gallery-compare" type="button" class="secondary gallery-action" disabled>Compare Selected</button>
+      </div>
+    </section>
+  </div>

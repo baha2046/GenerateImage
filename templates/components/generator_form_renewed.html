@@ -1,0 +1,97 @@
+<form id="generator-form" method="post" action="/generate" class="bg-white dark:bg-[#1a201f] border border-[#d9dedb] dark:border-[#33413d] rounded-2xl p-2 shadow-sm space-y-2">
+        <div>
+          <label for="model" class="block text-sm font-semibold text-[#626b73] dark:text-[#a7b1ad] mb-1.5">Model</label>
+          <select id="model" name="model" class="w-full rounded-xl border border-[#d9dedb] dark:border-[#33413d] bg-white dark:bg-[#111514] px-4 py-3 text-base focus:outline-none focus:ring-2 focus:ring-[#0f766e] dark:focus:ring-[#2dd4bf]">{{ model_options | safe }}</select>
+        </div>
+
+        <div>
+          <div class="flex items-center justify-between mb-1.5">
+            <label for="prompt" class="block text-sm font-semibold text-[#626b73] dark:text-[#a7b1ad]">Prompt</label>
+            <div class="flex gap-1">
+              <button id="history-button" class="secondary icon-button h-9 w-9" type="button" aria-label="Prompt History" title="Prompt History">{{ svg_icon("history") | safe }}</button>
+              <button id="templates-button" class="secondary icon-button h-9 w-9" type="button" aria-label="Prompt Templates" title="Prompt Templates">★</button>
+              <button id="outputs-button" class="secondary icon-button h-9 w-9" type="button" aria-label="Output Images" title="Output Images">{{ svg_icon("image") | safe }}</button>
+              <button id="settings-button" class="secondary icon-button h-9 w-9" type="button" aria-label="Settings" title="Settings">{{ svg_icon("settings") | safe }}</button>
+            </div>
+          </div>
+          <textarea id="prompt" name="prompt" required rows="4" class="w-full rounded-2xl border border-[#d9dedb] dark:border-[#33413d] bg-white dark:bg-[#111514] px-4 py-3 text-[15px] leading-snug focus:outline-none focus:ring-2 focus:ring-[#0f766e] dark:focus:ring-[#2dd4bf] resize-y">{{ values["prompt"] | e }}</textarea>
+        </div>
+
+        <div class="grid grid-cols-2 gap-4">
+          <div>
+            <label for="width" class="block text-sm font-semibold text-[#626b73] dark:text-[#a7b1ad] mb-1.5">Width</label>
+            <div class="flex gap-2">
+              <input id="width" class="dimension-input flex-1 rounded-2xl border border-[#d9dedb] dark:border-[#33413d] bg-white dark:bg-[#111514] px-4 py-3 text-base focus:outline-none focus:ring-2 focus:ring-[#0f766e]" name="width" type="number" min="{{ MIN_DIMENSION }}" max="{{ MAX_DIMENSION }}" step="1" value="{{ values['width'] }}">
+              <button class="dimension-action h-12 w-12 rounded-2xl border border-[#d9dedb] dark:border-[#33413d] text-sm font-bold active:scale-[0.985]" data-dimension="width" data-factor="2" type="button" aria-label="Double width">x2</button>
+              <button class="dimension-action h-12 w-12 rounded-2xl border border-[#d9dedb] dark:border-[#33413d] text-sm font-bold active:scale-[0.985]" data-dimension="width" data-factor="0.5" type="button" aria-label="Halve width">/2</button>
+            </div>
+          </div>
+          <div>
+            <label for="height" class="block text-sm font-semibold text-[#626b73] dark:text-[#a7b1ad] mb-1.5">Height</label>
+            <div class="flex gap-2">
+              <input id="height" class="dimension-input flex-1 rounded-2xl border border-[#d9dedb] dark:border-[#33413d] bg-white dark:bg-[#111514] px-4 py-3 text-base focus:outline-none focus:ring-2 focus:ring-[#0f766e]" name="height" type="number" min="{{ MIN_DIMENSION }}" max="{{ MAX_DIMENSION }}" step="1" value="{{ values['height'] }}">
+              <button class="dimension-action h-12 w-12 rounded-2xl border border-[#d9dedb] dark:border-[#33413d] text-sm font-bold active:scale-[0.985]" data-dimension="height" data-factor="2" type="button" aria-label="Double height">x2</button>
+              <button class="dimension-action h-12 w-12 rounded-2xl border border-[#d9dedb] dark:border-[#33413d] text-sm font-bold active:scale-[0.985]" data-dimension="height" data-factor="0.5" type="button" aria-label="Halve height">/2</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="grid grid-cols-2 gap-4">
+          <div>
+            <label for="seed" class="block text-sm font-semibold text-[#626b73] dark:text-[#a7b1ad] mb-1.5">Seed</label>
+            <input id="seed" name="seed" type="number" min="0" max="{{ 2**32-1 }}" step="1" value="{{ values['seed'] }}" class="w-full rounded-2xl border border-[#d9dedb] dark:border-[#33413d] bg-white dark:bg-[#111514] px-4 py-3 focus:outline-none focus:ring-2 focus:ring-[#0f766e]">
+          </div>
+          <div>
+            <label for="steps" class="block text-sm font-semibold text-[#626b73] dark:text-[#a7b1ad] mb-1.5">Steps</label>
+            <input id="steps" name="steps" type="number" min="1" max="100" step="1" value="{{ values['steps'] }}" class="w-full rounded-2xl border border-[#d9dedb] dark:border-[#33413d] bg-white dark:bg-[#111514] px-4 py-3 focus:outline-none focus:ring-2 focus:ring-[#0f766e]">
+          </div>
+        </div>
+
+        <div class="flex flex-wrap gap-x-6 gap-y-2 pt-1">
+          <label class="inline-flex items-center gap-2 text-sm cursor-pointer">
+            <input type="checkbox" name="random_seed" value="1" class="accent-[#0f766e]" {{ 'checked' if values.get('random_seed') else '' }}>
+            <span class="text-[#1e2428] dark:text-[#edf3f1]">Random seed</span>
+          </label>
+          <label class="inline-flex items-center gap-2 text-sm cursor-pointer">
+            <input id="upscale_enabled" type="checkbox" name="upscale_enabled" value="1" class="accent-[#0f766e]" {{ 'checked' if values.get('upscale_enabled') else '' }}>
+            <span class="text-[#1e2428] dark:text-[#edf3f1]">Upscale result</span>
+          </label>
+        </div>
+
+        <div class="grid grid-cols-2 gap-4">
+          <div>
+            <label for="upscale_resolution" class="block text-sm font-semibold text-[#626b73] dark:text-[#a7b1ad] mb-1.5">Upscale resolution</label>
+            <input id="upscale_resolution" name="upscale_resolution" type="number" min="64" max="8192" step="1" value="{{ values.get('upscale_resolution_raw','') }}" placeholder="{{ values.get('upscale_resolution',1024) }}" class="w-full rounded-2xl border border-[#d9dedb] dark:border-[#33413d] bg-white dark:bg-[#111514] px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-[#0f766e]">
+          </div>
+          <div>
+            <label for="filename_prefix" class="block text-sm font-semibold text-[#626b73] dark:text-[#a7b1ad] mb-1.5">Filename prefix</label>
+            <input id="filename_prefix" name="filename_prefix" value="{{ values.get('filename_prefix','') }}" placeholder="zimage" class="w-full rounded-2xl border border-[#d9dedb] dark:border-[#33413d] bg-white dark:bg-[#111514] px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-[#0f766e]">
+          </div>
+        </div>
+
+        <details class="advanced-section group border border-[#d9dedb] dark:border-[#33413d] rounded-2xl bg-[#f7f7f4]/60 dark:bg-[#111514]/60" {% if show_advanced_by_default %}open{% endif %}>
+          <summary class="cursor-pointer select-none px-4 py-3 text-sm font-semibold text-[#626b73] dark:text-[#a7b1ad] flex items-center justify-between">Advanced parameters <span class="text-xs opacity-60 group-open:rotate-180 transition">⌄</span></summary>
+          <div class="advanced-content px-4 pb-4 pt-1 grid gap-4 border-t border-[#d9dedb] dark:border-[#33413d]">
+
+            <div class="advanced-field" data-for-models="zimage-base,flux2-9B,flux2-9B-lora,flux2-9B-face">
+              <label for="guidance" class="block text-xs font-medium mb-1 text-[#626b73] dark:text-[#a7b1ad]">Guidance</label>
+              <input id="guidance" name="guidance" type="number" step="0.1" min="0" max="20" placeholder="auto" value="{{ values.get('guidance') or '' }}" class="w-full text-sm rounded-xl border border-[#d9dedb] dark:border-[#33413d] bg-white dark:bg-[#111514] px-3 py-2">
+            </div>
+
+            <div class="advanced-field" data-for-models="zimage,zimage-base,flux2-9B-lora,qwen">
+              <label for="lora_scale" class="block text-xs font-medium mb-1 text-[#626b73] dark:text-[#a7b1ad]">LoRA Scale</label>
+              <input id="lora_scale" name="lora_scale" type="number" step="0.05" min="0" max="2" placeholder="auto" value="{{ values.get('lora_scale') or '' }}" class="w-full text-sm rounded-xl border border-[#d9dedb] dark:border-[#33413d] bg-white dark:bg-[#111514] px-3 py-2">
+            </div>
+
+            <div class="advanced-field" data-for-models="qwen,qwen-2512">
+              <label for="negative_prompt" class="block text-xs font-medium mb-1 text-[#626b73] dark:text-[#a7b1ad]">Negative Prompt</label>
+              <textarea id="negative_prompt" name="negative_prompt" rows="2" placeholder="Leave empty to use model default" class="w-full text-sm rounded-xl border border-[#d9dedb] dark:border-[#33413d] bg-white dark:bg-[#111514] px-3 py-2">{{ values.get('negative_prompt') or '' }}</textarea>
+            </div>
+          </div>
+        </details>
+
+        <button id="generate-button" type="submit"
+                class="w-full mt-2 rounded-2xl bg-gradient-to-b from-[#0f766e] to-[#115e59] hover:brightness-105 active:brightness-95 text-white font-bold text-[15px] py-3.5 shadow-sm transition-all active:scale-[0.985]">
+          Generate Image
+        </button>
+      </form>

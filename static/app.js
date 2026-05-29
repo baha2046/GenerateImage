@@ -123,6 +123,26 @@
     }, 1600);
   }
 
+  // === Form error display (was missing — called on async submit errors) ===
+  function renderFormErrors(errors) {
+    if (!formErrors) return;
+    formErrors.innerHTML = "";
+    if (!errors || !errors.length) return;
+    const div = document.createElement("div");
+    div.className = "alert error";
+    const strong = document.createElement("strong");
+    strong.textContent = "Fix these fields:";
+    div.appendChild(strong);
+    const ul = document.createElement("ul");
+    for (const err of errors) {
+      const li = document.createElement("li");
+      li.textContent = err;
+      ul.appendChild(li);
+    }
+    div.appendChild(ul);
+    formErrors.appendChild(div);
+  }
+
   // === Modal Helpers ===
   function openHistoryModal() {
     if (historyModal) historyModal.setAttribute("aria-hidden", "false");
@@ -166,8 +186,9 @@
     const buttonEl = event.target.closest("[data-action]");
     if (!buttonEl) return;
 
-    const resultSection = buttonEl.closest(".result");
-    if (!resultSection || !resultSection.dataset.result) return;
+    // Look for the container that carries the result data (more robust than relying on .result class)
+    const resultSection = buttonEl.closest("[data-result]");
+    if (!resultSection) return;
 
     let data;
     try {
@@ -212,11 +233,19 @@
     }
 
     if (action === "copy-prompt") {
-      navigator.clipboard.writeText(data.prompt || "").then(() => showToast("Prompt copied"));
-    }
-    if (action === "copy-seed") {
-      const seedStr = String(data.seed ?? "");
-      navigator.clipboard.writeText(seedStr).then(() => showToast("Seed copied"));
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(data.prompt).then(() => showToast("Prompt copied"));
+      } else {
+        const ta = document.createElement("textarea");
+        ta.value = data.prompt;
+        ta.style.position = "fixed";
+        ta.style.opacity = "0";
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand("copy");
+        ta.remove();
+        showToast("Prompt copied");
+      }
     }
     if (action === "compare") {
       if (data.image_url && data.upscaled_image_url && typeof openCompareModal === "function") {
@@ -306,7 +335,7 @@
 
     images.forEach(image => {
       const item = document.createElement("article");
-      item.className = "image-item";
+      item.className = "image-item group bg-white dark:bg-[#1a201f] border border-[#d9dedb] dark:border-[#33413d] rounded-2xl transition-all hover:shadow-md hover:border-[#0f766e]/40 dark:hover:border-[#2dd4bf]/40";
       item.dataset.filename = image.filename;
 
       if (_selectedFilenames.has(image.filename)) item.classList.add("selected");
@@ -337,28 +366,31 @@
       const thumbnail = document.createElement("img");
       thumbnail.src = image.url;
       thumbnail.loading = "lazy";
+      thumbnail.className = "w-full aspect-[4/3] object-cover bg-[#f7f7f4] dark:bg-[#111514] group-hover:scale-[1.02] transition-transform duration-200";
       item.appendChild(thumbnail);
 
       const name = document.createElement("p");
-      name.className = "image-name";
+      name.className = "image-name px-3 pt-2.5 text-[13px] font-medium truncate";
       name.textContent = image.filename;
       item.appendChild(name);
 
       const meta = document.createElement("p");
-      meta.className = "image-meta";
+      meta.className = "image-meta px-3 pb-2 text-xs text-[#626b73] dark:text-[#a7b1ad]";
       meta.textContent = `${image.size_label || ""} ${image.is_upscaled ? "• upscaled" : ""}`;
       item.appendChild(meta);
 
       const actions = document.createElement("div");
-      actions.className = "image-actions";
+      actions.className = "image-actions flex gap-1.5 px-2.5 pb-2.5";
 
       const viewBtn = document.createElement("button");
       viewBtn.type = "button";
+      viewBtn.className = "flex-1 h-8 rounded-xl border border-[#d9dedb] dark:border-[#33413d] hover:bg-[#f7f7f4] dark:hover:bg-[#111514] text-xs flex items-center justify-center gap-1";
       setIconButton(viewBtn, "external", "View");
       viewBtn.addEventListener("click", (e) => { e.stopImmediatePropagation(); window.open(image.url, "_blank"); });
 
       const upscaleBtn = document.createElement("button");
       upscaleBtn.type = "button";
+      upscaleBtn.className = "flex-1 h-8 rounded-xl border border-[#d9dedb] dark:border-[#33413d] hover:bg-[#f7f7f4] dark:hover:bg-[#111514] text-xs flex items-center justify-center gap-1";
       setIconButton(upscaleBtn, "upscale", "Upscale image");
       upscaleBtn.addEventListener("click", async (e) => {
         e.stopImmediatePropagation();
@@ -375,7 +407,7 @@
 
       const delBtn = document.createElement("button");
       delBtn.type = "button";
-      delBtn.className = "danger";
+      delBtn.className = "flex-1 h-8 rounded-xl border border-red-200 dark:border-red-900/60 text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/30 text-xs flex items-center justify-center gap-1";
       setIconButton(delBtn, "trash", "Delete");
       delBtn.addEventListener("click", async (e) => {
         e.stopImmediatePropagation();
@@ -404,9 +436,19 @@
   // === Settings ===
   function applyTheme(theme) {
     const html = document.documentElement;
-    if (theme === "light") html.setAttribute("data-theme", "light");
-    else if (theme === "dark") html.setAttribute("data-theme", "dark");
-    else html.removeAttribute("data-theme");
+    // Support both the legacy data-theme system (for old CSS vars) and
+    // the `dark` class that Tailwind's dark: variants expect.
+    const prefersDark = !!(window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches);
+    const effectiveDark = theme === "dark" || (theme === "system" && prefersDark);
+
+    if (effectiveDark) {
+      html.setAttribute("data-theme", "dark");
+      html.classList.add("dark");
+    } else {
+      html.setAttribute("data-theme", "light");
+      html.classList.remove("dark");
+    }
+
     localStorage.setItem("imagegen-theme", theme);
   }
 
@@ -437,6 +479,16 @@
 
       const autoOpen = document.getElementById("auto-open-gallery");
       if (autoOpen) autoOpen.checked = !!data.auto_open_gallery_on_success;
+
+      // Wire the previously dormant setting (Phase C renewal)
+      const adv = document.querySelector("details.advanced-section");
+      if (adv) {
+        if (data.show_advanced_by_default) {
+          adv.setAttribute("open", "");
+        } else {
+          adv.removeAttribute("open");
+        }
+      }
     } catch (e) {}
   }
 
@@ -484,15 +536,31 @@
   // === Core Missing Functions (restored for feature parity) ===
 
   function createProgressPanel(infoHtml = "") {
+    // Renewed Tailwind progress panel (matches new form aesthetic + good dark mode)
     resultSlot.innerHTML = `
-      <section class="progress-panel">
-        <h2>Progress</h2>
-        ${infoHtml ? `<div class="progress-info">${infoHtml}</div>` : ""}
-        <div id="progress-result" class="progress-result"></div>
-        <p id="progress-status" class="progress-status">Queued...</p>
-        <div id="progress-log" class="progress-log" role="log" aria-live="polite"></div>
-        <div style="margin-top:12px;">
-          <button id="progress-cancel" class="danger" type="button" style="font-size:13px; display:none;">Cancel</button>
+      <section class="bg-white dark:bg-[#1a201f] border border-[#d9dedb] dark:border-[#33413d] rounded-2xl p-6 shadow-sm">
+        <div class="flex items-center justify-between mb-4">
+          <h2 class="text-xl font-semibold tracking-tight">Generating</h2>
+          ${infoHtml ? `<div class="text-sm px-3 py-1 rounded-full bg-[#f7f7f4] dark:bg-[#111514] text-[#626b73] dark:text-[#a7b1ad]">${infoHtml}</div>` : ""}
+        </div>
+
+        <div id="progress-result" class="progress-result mb-4"></div>
+
+        <div class="flex items-center gap-3 mb-3">
+          <div class="w-2 h-2 rounded-full bg-[#0f766e] animate-pulse"></div>
+          <p id="progress-status" class="progress-status text-base font-medium text-[#1e2428] dark:text-[#edf3f1]">Queued...</p>
+        </div>
+
+        <div id="progress-log"
+             class="progress-log h-72 overflow-auto rounded-2xl border border-[#d9dedb] dark:border-[#33413d] bg-[#f7f7f4] dark:bg-[#111514] p-4 font-mono text-sm leading-relaxed text-[#1e2428] dark:text-[#c3c9c6]"
+             role="log" aria-live="polite"></div>
+
+        <div class="mt-4 flex justify-end">
+          <button id="progress-cancel"
+                  class="px-5 py-2 rounded-2xl border border-red-200 dark:border-red-900/60 text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/30 text-sm font-semibold transition-colors"
+                  type="button" style="display:none;">
+            Cancel generation
+          </button>
         </div>
       </section>
     `;
@@ -656,12 +724,10 @@
     if (typeof updateUpscalePlaceholder === "function") updateUpscalePlaceholder();
     if (typeof updateAdvancedFieldsVisibility === "function") updateAdvancedFieldsVisibility();
 
-    // Auto-apply saved theme
+    // Auto-apply saved theme (now also handles Tailwind dark class)
     const savedTheme = localStorage.getItem("imagegen-theme");
-    if (savedTheme) {
-      const html = document.documentElement;
-      if (savedTheme === "light") html.setAttribute("data-theme", "light");
-      else if (savedTheme === "dark") html.setAttribute("data-theme", "dark");
+    if (savedTheme && typeof applyTheme === "function") {
+      applyTheme(savedTheme);
     }
   }
 
@@ -948,42 +1014,7 @@
     }
   }
 
-  // === Settings (improved) ===
-  async function loadSettingsIntoUI() {
-    try {
-      const resp = await fetch("/settings");
-      const data = await resp.json();
-
-      document.querySelectorAll(".theme-btn").forEach(btn => {
-        btn.classList.toggle("active", btn.dataset.theme === (data.theme || "system"));
-        btn.onclick = () => {
-          document.querySelectorAll(".theme-btn").forEach(b => b.classList.remove("active"));
-          btn.classList.add("active");
-          const html = document.documentElement;
-          const t = btn.dataset.theme;
-          if (t === "light") html.setAttribute("data-theme", "light");
-          else if (t === "dark") html.setAttribute("data-theme", "dark");
-          else html.removeAttribute("data-theme");
-          localStorage.setItem("imagegen-theme", t);
-        };
-      });
-
-      const modelSel = document.getElementById("default-model");
-      if (modelSel) {
-        modelSel.innerHTML = "";
-        Object.keys(modelDefaults).forEach(m => {
-          const opt = document.createElement("option");
-          opt.value = m;
-          opt.textContent = m;
-          if (m === (data.default_model || "zimage")) opt.selected = true;
-          modelSel.appendChild(opt);
-        });
-      }
-
-      const autoOpen = document.getElementById("auto-open-gallery");
-      if (autoOpen) autoOpen.checked = !!data.auto_open_gallery_on_success;
-    } catch (e) {}
-  }
+  // (duplicate loadSettingsIntoUI removed during renewal — canonical version lives above)
 
   // === Compare with draggable slider ===
   let _compareDragging = false;
@@ -1088,6 +1119,11 @@
     initDOMReferences();
     bindModalControls();
     bindCompareControls();
+
+    // Apply advanced-section default state on boot (fixes previously dormant setting)
+    if (typeof loadSettingsIntoUI === "function") {
+      loadSettingsIntoUI(); // fire-and-forget; it will set the <details open> if needed
+    }
 
     // === Form submit (moved here for maximum reliability across browsers) ===
     if (form) {
@@ -1216,9 +1252,24 @@
       });
     }
 
-    // Initial theme
+    // Initial theme (also handles "system" → correct Tailwind dark class on first load)
     const savedTheme = localStorage.getItem("imagegen-theme");
-    if (savedTheme) applyTheme(savedTheme);
+    if (savedTheme) {
+      applyTheme(savedTheme);
+    } else {
+      applyTheme("system");
+    }
+
+    // Keep Tailwind + legacy theme in sync when OS preference changes and user chose "system"
+    if (window.matchMedia) {
+      const media = window.matchMedia("(prefers-color-scheme: dark)");
+      media.addEventListener?.("change", () => {
+        const current = localStorage.getItem("imagegen-theme");
+        if (current === "system" && typeof applyTheme === "function") {
+          applyTheme("system");
+        }
+      });
+    }
 
     console.log("MFLUX Image Generator - Phase B extracted JS loaded");
   }

@@ -9,7 +9,7 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 
-from quart import Quart, Response, abort, jsonify, request, send_file, send_from_directory, websocket
+from quart import Quart, Response, abort, jsonify, render_template, request, send_file, send_from_directory, websocket
 
 ROOT = Path(__file__).resolve().parent
 OUTPUTS_DIR = ROOT / "outputs"
@@ -23,6 +23,11 @@ MAX_DIMENSION = 2048
 HOST = "127.0.0.1"
 PORT = 5002
 app = Quart(__name__)
+# Jinja2 templates configured for UI renewal (Phase C). templates/ dir contains
+# base.html + components. Quart auto-discovers ./templates when jinja2 is installed.
+app.jinja_env.auto_reload = True
+app.config["TEMPLATES_AUTO_RELOAD"] = True
+
 JOBS: dict[str, dict[str, object]] = {}
 MAX_COMPLETED_JOBS = 20
 
@@ -995,6 +1000,12 @@ def svg_icon(name: str) -> str:
     return icons.get(name, "")
 
 
+# Expose to Jinja templates (Phase C renewal)
+app.jinja_env.globals["svg_icon"] = svg_icon
+app.jinja_env.globals["MIN_DIMENSION"] = MIN_DIMENSION
+app.jinja_env.globals["MAX_DIMENSION"] = MAX_DIMENSION
+
+
 def get_static_version(filename: str) -> str:
     """Return a cache-busting query string based on file mtime (great for dev)."""
     try:
@@ -1176,14 +1187,20 @@ def page(values: dict[str, object] | None = None, result: dict[str, object] | No
   <script src="/static/app.js{js_version}"></script>
 </body>
 </html>"""
+    # Phase C (renewal): we still build the giant string above for perfect 1:1 during port.
+    # Next commit in this step will switch fully to render_template + extracted partials.
+    # For now keep returning the trusted HTML so the live UI is untouched.
     return document
 
 
 def render_result(result: dict[str, object] | None, values: dict[str, object]) -> str:
     if not result:
-        return """<section class="result">
-      <h2>Result</h2>
-      <p class="meta">Generated images will appear here after the command finishes.</p>
+        return """<section class="result bg-white dark:bg-[#1a201f] border border-[#d9dedb] dark:border-[#33413d] rounded-2xl p-8 text-center shadow-sm">
+      <div class="mx-auto mb-3 h-12 w-12 rounded-2xl bg-[#f7f7f4] dark:bg-[#111514] flex items-center justify-center">
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="text-[#0f766e]"><rect x="3" y="5" width="18" height="14" rx="2"/><circle cx="8.5" cy="10.5" r="1.5"/><path d="m21 15-5-5L5 19"/></svg>
+      </div>
+      <div class="font-semibold text-lg mb-1">No image yet</div>
+      <p class="text-sm text-[#626b73] dark:text-[#a7b1ad]">Your generated images will appear here after you hit Generate.</p>
     </section>"""
 
     stdout = str(result.get("stdout", "")).strip()
@@ -1216,34 +1233,48 @@ def render_result(result: dict[str, object] | None, values: dict[str, object]) -
         result_data_json = html.escape(json.dumps(result_data), quote=True)
 
         has_upscale = bool(result.get("upscale") and result.get("upscale").get("success"))
-        compare_button = '<button type="button" class="secondary" data-action="compare">Compare</button>' if has_upscale else ''
+        compare_button = '<button type="button" class="px-3 py-1.5 text-xs font-medium rounded-xl border border-[#d9dedb] dark:border-[#33413d] hover:bg-[#f7f7f4] dark:hover:bg-[#111514]" data-action="compare">Compare</button>' if has_upscale else ''
 
         action_html = (
-            '<div class="result-actions">'
-            '<button type="button" class="secondary" data-action="remix">Remix (same settings)</button>'
-            '<button type="button" class="secondary" data-action="remix-new-seed">Remix (new seed)</button>'
-            '<button type="button" class="secondary" data-action="copy-prompt">Copy Prompt</button>'
-            '<button type="button" class="secondary" data-action="copy-seed">Copy Seed</button>'
+            '<div class="result-actions flex flex-wrap gap-2 mt-4">'
+            '<button type="button" class="px-3 py-1.5 text-xs font-medium rounded-xl border border-[#d9dedb] dark:border-[#33413d] hover:bg-[#f7f7f4] dark:hover:bg-[#111514]" data-action="remix">Remix (same)</button>'
+            '<button type="button" class="px-3 py-1.5 text-xs font-medium rounded-xl border border-[#d9dedb] dark:border-[#33413d] hover:bg-[#f7f7f4] dark:hover:bg-[#111514]" data-action="remix-new-seed">Remix (new seed)</button>'
+            '<button type="button" class="px-3 py-1.5 text-xs font-medium rounded-xl border border-[#d9dedb] dark:border-[#33413d] hover:bg-[#f7f7f4] dark:hover:bg-[#111514]" data-action="copy-prompt">Copy Prompt</button>'
             + compare_button +
             '</div>'
         )
 
-        return f"""<section class="result" data-result="{result_data_json}">
-      <h2>Result</h2>
-      <div class="alert ok">Image generated successfully.</div>
-      <p class="meta"><strong>Model:</strong> {html.escape(str(values.get("model", "")))}</p>
-      <p class="meta"><strong>Seed:</strong> {html.escape(str(values.get("seed", "")))}</p>
-      <p class="meta"><strong>Output:</strong> {html.escape(str(output_path))}</p>
+        # Renewed Tailwind result card (matches new form style)
+        # Keep the "result" class for backward compatibility with existing JS handlers
+        return f"""<section class="result bg-white dark:bg-[#1a201f] border border-[#d9dedb] dark:border-[#33413d] rounded-2xl p-6 shadow-sm" data-result="{result_data_json}">
+      <div class="flex items-center justify-between mb-4">
+        <h2 class="text-xl font-semibold tracking-tight">Result</h2>
+        <div class="px-3 py-1 text-xs rounded-full bg-[#eefbf4] dark:bg-[#123225] text-[#17633a] dark:text-[#a8f0c9] font-medium">Success</div>
+      </div>
+
+      <div class="grid grid-cols-1 sm:grid-cols-2 gap-x-8 gap-y-2 text-sm mb-4">
+        <div><span class="text-[#626b73] dark:text-[#a7b1ad]">Model</span><br><span class="font-medium">{html.escape(str(values.get("model", "")))}</span></div>
+        <div><span class="text-[#626b73] dark:text-[#a7b1ad]">Seed</span><br><span class="font-medium">{html.escape(str(values.get("seed", "")))}</span></div>
+        <div class="sm:col-span-2"><span class="text-[#626b73] dark:text-[#a7b1ad]">Output</span><br><span class="font-mono text-xs break-all">{html.escape(str(output_path))}</span></div>
+      </div>
+
       {action_html}
-      <img src="{image_url}" alt="Generated image">
+
+      <div class="mt-4 rounded-2xl overflow-hidden border border-[#d9dedb] dark:border-[#33413d]">
+        <img src="{image_url}" alt="Generated image" class="w-full">
+      </div>
+
       {upscale_html}
       {render_log("Generate Command", command_text)}
     </section>"""
 
-    return f"""<section class="result">
-      <h2>Result</h2>
+    return f"""<section class="result bg-white dark:bg-[#1a201f] border border-red-200 dark:border-red-900/60 rounded-2xl p-6 shadow-sm">
+      <div class="flex items-center gap-3 mb-4">
+        <div class="px-3 py-1 text-xs rounded-full bg-red-100 dark:bg-red-950 text-red-700 dark:text-red-400 font-medium">Error</div>
+        <h2 class="text-xl font-semibold tracking-tight">Result</h2>
+      </div>
       <div class="alert error">{html.escape(str(result.get("error", "Generation failed.")))}</div>
-      <p class="meta"><strong>Seed:</strong> {html.escape(str(values.get("seed", "")))}</p>
+      <p class="text-sm text-[#626b73] dark:text-[#a7b1ad] mb-4"><strong>Seed:</strong> {html.escape(str(values.get("seed", "")))}</p>
       {render_log("Generate Command", command_text)}
       {render_log("Generate Output", stdout)}
       {render_log("Generate Errors", stderr)}
@@ -1262,25 +1293,38 @@ def render_upscale_result(upscale: object) -> str:
     if upscale.get("success"):
         image_url = html.escape(str(upscale.get("image_url", "")))
         return f"""
-      <h3>Upscaled Result</h3>
-      <div class="alert ok">Image upscaled successfully.</div>
-      <p class="meta"><strong>Resolution:</strong> {html.escape(str(upscale.get("resolution", "")))}</p>
-      <p class="meta"><strong>Output:</strong> {html.escape(str(upscale.get("output_path", "")))}</p>
-      <img src="{image_url}" alt="Upscaled generated image">
-      {render_log("Upscale Command", command_text)}"""
+      <div class="mt-6 pt-6 border-t border-[#d9dedb] dark:border-[#33413d]">
+        <div class="flex items-center justify-between mb-3">
+          <div class="font-semibold">Upscaled Result</div>
+          <div class="text-xs px-2.5 py-0.5 rounded-full bg-[#eefbf4] dark:bg-[#123225] text-[#17633a] dark:text-[#a8f0c9]">Upscaled</div>
+        </div>
+        <div class="text-sm mb-3 text-[#626b73] dark:text-[#a7b1ad]">
+          Resolution: <span class="font-medium text-[#1e2428] dark:text-[#edf3f1]">{html.escape(str(upscale.get("resolution", "")))}px</span>
+        </div>
+        <div class="rounded-2xl overflow-hidden border border-[#d9dedb] dark:border-[#33413d]">
+          <img src="{image_url}" alt="Upscaled generated image" class="w-full">
+        </div>
+        {render_log("Upscale Command", command_text)}
+      </div>"""
 
     return f"""
-      <h3>Upscaled Result</h3>
-      <div class="alert error">{html.escape(str(upscale.get("error", "Upscale failed.")))}</div>
-      {render_log("Upscale Command", command_text)}
-      {render_log("Upscale Output", stdout)}
-      {render_log("Upscale Errors", stderr)}"""
+      <div class="mt-6 pt-6 border-t border-red-200 dark:border-red-900/60">
+        <div class="font-semibold mb-2 text-red-600 dark:text-red-400">Upscale Failed</div>
+        <div class="alert error">{html.escape(str(upscale.get("error", "Upscale failed.")))}</div>
+        {render_log("Upscale Command", command_text)}
+        {render_log("Upscale Output", stdout)}
+        {render_log("Upscale Errors", stderr)}
+      </div>"""
 
 
 def render_log(title: str, text: str) -> str:
     if not text:
         return ""
-    return f"<h3>{html.escape(title)}</h3><pre>{html.escape(text)}</pre>"
+    return f"""
+      <div class="mt-4">
+        <div class="text-xs font-semibold tracking-widest text-[#626b73] dark:text-[#a7b1ad] mb-1.5">{html.escape(title)}</div>
+        <pre class="max-h-64 overflow-auto rounded-2xl border border-[#d9dedb] dark:border-[#33413d] bg-[#f7f7f4] dark:bg-[#111514] p-4 text-xs font-mono leading-relaxed text-[#1e2428] dark:text-[#c3c9c6]">{html.escape(text)}</pre>
+      </div>"""
 
 
 def render_history_modal() -> str:
@@ -1326,26 +1370,27 @@ def render_outputs_modal() -> str:
         <button id="outputs-close" class="secondary icon-button" type="button" aria-label="Close output images" title="Close output images">{svg_icon("close")}</button>
       </div>
 
-      <div class="gallery-toolbar">
-        <input id="gallery-search" type="text" placeholder="Search filename or prefix..." aria-label="Search images">
-        <div class="gallery-filters">
+      <div class="p-4 border-b border-[#d9dedb] dark:border-[#33413d] bg-[#f7f7f4]/60 dark:bg-[#111514]/60 space-y-3">
+        <input id="gallery-search" type="text" placeholder="Search filename or prefix..." aria-label="Search images"
+               class="w-full rounded-2xl border border-[#d9dedb] dark:border-[#33413d] bg-white dark:bg-[#1a201f] px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-[#0f766e]">
+        <div class="flex flex-wrap gap-1.5" id="gallery-filters">
           <button type="button" class="gallery-filter active" data-filter="all">All</button>
           <button type="button" class="gallery-filter" data-filter="flux">Flux</button>
           <button type="button" class="gallery-filter" data-filter="zimage">Z-Image</button>
           <button type="button" class="gallery-filter" data-filter="qwen">Qwen</button>
           <button type="button" class="gallery-filter" data-filter="upscaled">Upscaled</button>
         </div>
-        <div id="gallery-stats" class="gallery-stats"></div>
+        <div id="gallery-stats" class="text-xs text-[#626b73] dark:text-[#a7b1ad]"></div>
       </div>
 
-      <div id="outputs-list" class="image-list">
+      <div id="outputs-list" class="image-list p-4">
         <p class="empty-history">No images found.</p>
       </div>
 
-      <div class="gallery-actions-bar">
-        <button id="gallery-refresh" type="button" class="secondary gallery-action">Refresh</button>
-        <button id="gallery-bulk-delete" type="button" class="secondary danger gallery-action gallery-action-wide" disabled>Delete Selected</button>
-        <button id="gallery-compare" type="button" class="secondary gallery-action" disabled>Compare Selected</button>
+      <div class="gallery-actions-bar border-t border-[#d9dedb] dark:border-[#33413d] bg-[#f7f7f4]/60 dark:bg-[#111514]/60 p-4 flex gap-3">
+        <button id="gallery-refresh" type="button" class="flex-1 h-11 rounded-2xl border border-[#d9dedb] dark:border-[#33413d] hover:bg-white dark:hover:bg-[#1a201f] text-sm font-semibold">Refresh</button>
+        <button id="gallery-bulk-delete" type="button" class="flex-1 h-11 rounded-2xl border border-red-200 dark:border-red-900/60 text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/30 text-sm font-semibold disabled:opacity-40" disabled>Delete Selected</button>
+        <button id="gallery-compare" type="button" class="flex-1 h-11 rounded-2xl border border-[#d9dedb] dark:border-[#33413d] hover:bg-white dark:hover:bg-[#1a201f] text-sm font-semibold disabled:opacity-40" disabled>Compare</button>
       </div>
     </section>
   </div>'''
@@ -1430,7 +1475,89 @@ def render_compare_modal() -> str:
 
 @app.get("/")
 async def index() -> Response:
-    return Response(page(), content_type="text/html; charset=utf-8")
+    # Build real context so the renewed form + all buttons + model pulldown work.
+    # We reuse the same logic the old page() used (this will be cleaned up when we
+    # fully delete the giant string builder).
+    saved_dimensions = load_form_state()
+    values = {
+        "model": "zimage",
+        "prompt": "A puffin standing on a cliff",
+        "width": saved_dimensions["width"],
+        "height": saved_dimensions["height"],
+        "steps": MODELS["zimage"]["default_steps"],
+        "seed": 42,
+        "random_seed": False,
+        "filename_prefix": default_filename_prefix("zimage"),
+        "filename": "",
+        "upscale_enabled": False,
+        "upscale_resolution": 1024,
+        "upscale_resolution_raw": "",
+    }
+
+    client_defaults = {
+        name: {
+            "steps": config["default_steps"],
+            "filenamePrefix": config["filename_prefix"],
+        }
+        for name, config in MODELS.items()
+    }
+    client_defaults_json = json.dumps(client_defaults)
+
+    js_version = get_static_version("app.js")
+    css_version = get_static_version("app.css")
+
+    model_options = "\n".join(
+        f'<option value="{html.escape(name)}" {"selected" if values["model"] == name else ""}>{html.escape(config["label"])}</option>'
+        for name, config in MODELS.items()
+    )
+
+    # Empty on initial GET
+    error_html = ""
+    result_html = render_result(None, values)
+
+    config_script = f'''<script>
+    window.APP_CONFIG = {{
+      modelDefaults: {client_defaults_json},
+      icons: {{
+        check: `{svg_icon("check")}`,
+        external: `{svg_icon("external")}`,
+        rename: `{svg_icon("rename")}`,
+        trash: `{svg_icon("trash")}`,
+        upscale: `{svg_icon("upscale")}`,
+      }}
+    }};
+  </script>'''
+
+    # Pre-render modals the same way the legacy code did (keeps them working)
+    history_modal = render_history_modal()
+    templates_modal = render_templates_modal()
+    outputs_modal = render_outputs_modal()
+    settings_modal = render_settings_modal()
+    compare_modal = render_compare_modal()
+
+    # For initial server-rendered state of the advanced section + theme (reduces flash)
+    ui_settings = load_ui_settings()
+    show_advanced_by_default = bool(ui_settings.get("show_advanced_by_default"))
+    initial_theme = ui_settings.get("theme", "system")   # light | dark | system
+
+    return await render_template(
+        "index.html",
+        show_renewed_form=True,
+        values=values,
+        model_options=model_options,
+        error_html=error_html,
+        result_html=result_html,
+        config_script=config_script,
+        css_version=css_version,
+        js_version=js_version,
+        history_modal=history_modal,
+        templates_modal=templates_modal,
+        outputs_modal=outputs_modal,
+        settings_modal=settings_modal,
+        compare_modal=compare_modal,
+        show_advanced_by_default=show_advanced_by_default,
+        initial_theme=initial_theme,
+    )
 
 
 @app.post("/generate")
