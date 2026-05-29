@@ -387,6 +387,83 @@ def safe_output_image_path(filename: str) -> Path:
     return path
 
 
+def metadata_path_for_image(path: Path) -> Path:
+    return path.with_name(f"{path.name}.meta.json")
+
+
+def build_generation_metadata(values: dict[str, object], result: dict[str, object]) -> dict[str, object]:
+    metadata: dict[str, object] = {
+        "version": 1,
+        "kind": "generation",
+        "created_at": datetime.now().isoformat(timespec="seconds"),
+        "filename": Path(str(result.get("output_path", values.get("filename", "")))).name,
+        "prompt": str(values.get("prompt", "")),
+        "model": str(values.get("model", "")),
+        "seed": values.get("seed"),
+        "steps": values.get("steps"),
+        "size": {
+            "width": values.get("width"),
+            "height": values.get("height"),
+        },
+        "filename_prefix": str(values.get("filename_prefix", "")),
+        "random_seed": bool(values.get("random_seed")),
+        "upscale_enabled": bool(values.get("upscale_enabled")),
+        "upscale_resolution": values.get("upscale_resolution"),
+    }
+
+    for key in ("guidance", "lora_scale", "negative_prompt"):
+        if values.get(key) is not None:
+            metadata[key] = values.get(key)
+
+    if result.get("image_url"):
+        metadata["image_url"] = str(result.get("image_url"))
+
+    return metadata
+
+
+def build_upscale_metadata(source_path: Path, result: dict[str, object], resolution: int) -> dict[str, object]:
+    source_metadata = read_image_metadata(source_path)
+    metadata = dict(source_metadata) if isinstance(source_metadata, dict) else {
+        "version": 1,
+        "kind": "upscale",
+        "created_at": datetime.now().isoformat(timespec="seconds"),
+    }
+
+    output_path = Path(str(result.get("output_path", "")))
+    metadata.update(
+        {
+            "version": 1,
+            "filename": output_path.name,
+            "image_url": str(result.get("image_url", "")),
+            "upscale_enabled": True,
+            "upscale_resolution": resolution,
+            "upscale": {
+                "enabled": True,
+                "resolution": resolution,
+                "source_filename": source_path.name,
+                "source_url": f"/outputs/{source_path.name}",
+            },
+        }
+    )
+    return metadata
+
+
+def write_image_metadata(path: Path, metadata: dict[str, object]) -> None:
+    sidecar = metadata_path_for_image(path)
+    tmp_path = sidecar.with_name(f"{sidecar.name}.tmp")
+    tmp_path.write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
+    tmp_path.replace(sidecar)
+
+
+def read_image_metadata(path: Path) -> dict[str, object] | None:
+    sidecar = metadata_path_for_image(path)
+    try:
+        data = json.loads(sidecar.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
 def list_output_images() -> list[dict[str, object]]:
     if not OUTPUTS_DIR.exists():
         return []
@@ -413,6 +490,7 @@ def list_output_images() -> list[dict[str, object]]:
                 "modified": datetime.fromtimestamp(stat.st_mtime).isoformat(timespec="seconds"),
                 "prefix": prefix,               # e.g. "flux", "zimage", "qwen"
                 "is_upscaled": is_upscaled,
+                "metadata": read_image_metadata(path),
             }
         )
 
@@ -425,6 +503,9 @@ def delete_output_image(filename: str) -> list[dict[str, object]]:
     if not path.exists() or not path.is_file():
         raise FileNotFoundError("Image file not found.")
     path.unlink()
+    metadata_path = metadata_path_for_image(path)
+    if metadata_path.exists():
+        metadata_path.unlink()
     return list_output_images()
 
 
@@ -778,7 +859,7 @@ async def run_upscale(image_path: Path, resolution: int, job: dict[str, object])
         }
 
     success = return_code == 0 and output_path.exists()
-    return {
+    result = {
         "success": success,
         "error": "" if success else f"Upscale failed with exit code {return_code}.",
         "stdout": "\n".join(stdout),
@@ -788,6 +869,9 @@ async def run_upscale(image_path: Path, resolution: int, job: dict[str, object])
         "image_url": f"/outputs/{output_path.name}" if success else "",
         "resolution": resolution,
     }
+    if success:
+        write_image_metadata(output_path, build_upscale_metadata(image_path, result, resolution))
+    return result
 
 
 async def run_generation(values: dict[str, object], job: dict[str, object]) -> dict[str, object]:
@@ -862,7 +946,7 @@ async def run_generation(values: dict[str, object], job: dict[str, object]) -> d
         }
 
     success = return_code == 0 and output_path.exists()
-    return {
+    result = {
         "success": success,
         "error": "" if success else f"Generation failed with exit code {return_code}.",
         "stdout": "\n".join(stdout),
@@ -871,6 +955,9 @@ async def run_generation(values: dict[str, object], job: dict[str, object]) -> d
         "output_path": output_path,
         "image_url": f"/outputs/{output_path.name}" if success else "",
     }
+    if success:
+        write_image_metadata(output_path, build_generation_metadata(values, result))
+    return result
 
 
 async def run_generation_with_optional_upscale(values: dict[str, object], job: dict[str, object]) -> dict[str, object]:

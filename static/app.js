@@ -110,6 +110,80 @@
     buttonElement.innerHTML = icons[iconName] || "";
   }
 
+  function canRemixFromMetadata(metadata) {
+    if (!metadata || typeof metadata !== "object") return false;
+    const size = metadata.size || {};
+    const width = metadata.width ?? size.width;
+    const height = metadata.height ?? size.height;
+    return !!metadata.prompt && !!metadata.model && metadata.seed != null && metadata.steps != null && width != null && height != null;
+  }
+
+  function remixDataFromMetadata(image) {
+    const metadata = image.metadata || {};
+    const size = metadata.size || {};
+    const upscale = metadata.upscale || {};
+    return {
+      model: metadata.model || "",
+      prompt: metadata.prompt || "",
+      width: metadata.width ?? size.width,
+      height: metadata.height ?? size.height,
+      steps: metadata.steps,
+      seed: metadata.seed,
+      random_seed: !!metadata.random_seed,
+      filename_prefix: metadata.filename_prefix || image.prefix || "",
+      upscale_enabled: !!(metadata.upscale_enabled || upscale.enabled),
+      upscale_resolution: metadata.upscale_resolution || upscale.resolution || "",
+      guidance: metadata.guidance ?? "",
+      lora_scale: metadata.lora_scale ?? "",
+      negative_prompt: metadata.negative_prompt || "",
+      image_url: image.url || metadata.image_url || "",
+    };
+  }
+
+  function hydrateGeneratorForm(data, useNewSeed = false) {
+    if (data.model && modelSelect) modelSelect.value = data.model;
+    if (promptInput) promptInput.value = data.prompt || "";
+    if (widthInput) widthInput.value = data.width ?? 512;
+    if (heightInput) heightInput.value = data.height ?? 512;
+    if (stepsInput) stepsInput.value = data.steps ?? 9;
+    if (filenamePrefixInput) filenamePrefixInput.value = data.filename_prefix || "";
+
+    const seedInput = document.getElementById("seed");
+    if (seedInput) {
+      seedInput.value = useNewSeed
+        ? Math.floor(Math.random() * 4294967295)
+        : (data.seed ?? 42);
+    }
+
+    const randomCb = document.querySelector('input[name="random_seed"]');
+    if (randomCb) randomCb.checked = !!data.random_seed;
+
+    const upscaleCb = document.getElementById("upscale_enabled");
+    if (upscaleCb) upscaleCb.checked = !!data.upscale_enabled;
+
+    const upscaleRes = document.getElementById("upscale_resolution");
+    if (upscaleRes) upscaleRes.value = data.upscale_resolution || "";
+
+    const guidance = document.getElementById("guidance");
+    if (guidance) guidance.value = data.guidance ?? "";
+
+    const lora = document.getElementById("lora_scale");
+    if (lora) lora.value = data.lora_scale ?? "";
+
+    const negativePrompt = document.getElementById("negative_prompt");
+    if (negativePrompt) negativePrompt.value = data.negative_prompt || "";
+
+    if (modelSelect) modelSelect.dispatchEvent(new Event("change", { bubbles: true }));
+    if (typeof updateUpscalePlaceholder === "function") updateUpscalePlaceholder();
+    if (typeof updateAdvancedFieldsVisibility === "function") updateAdvancedFieldsVisibility();
+
+    if (historyModal) historyModal.setAttribute("aria-hidden", "true");
+    if (outputsModal) outputsModal.setAttribute("aria-hidden", "true");
+    if (promptInput) { promptInput.focus(); promptInput.select(); }
+
+    showToast("Form updated - ready to generate");
+  }
+
   // === Toast ===
   function showToast(message) {
     const toast = document.createElement("div");
@@ -198,38 +272,7 @@
     const action = buttonEl.dataset.action;
 
     if (action === "remix" || action === "remix-new-seed") {
-      if (data.model && modelSelect) modelSelect.value = data.model;
-      if (promptInput) promptInput.value = data.prompt || "";
-      if (widthInput) widthInput.value = data.width ?? 512;
-      if (heightInput) heightInput.value = data.height ?? 512;
-      if (stepsInput) stepsInput.value = data.steps ?? 9;
-      if (filenamePrefixInput) filenamePrefixInput.value = data.filename_prefix || "";
-
-      const seedInput = document.getElementById("seed");
-      if (seedInput) {
-        seedInput.value = (action === "remix-new-seed")
-          ? Math.floor(Math.random() * 4294967295)
-          : (data.seed ?? 42);
-      }
-
-      const randomCb = document.querySelector('input[name="random_seed"]');
-      if (randomCb) randomCb.checked = !!data.random_seed;
-
-      const upscaleCb = document.getElementById("upscale_enabled");
-      if (upscaleCb) upscaleCb.checked = !!data.upscale_enabled;
-
-      const upscaleRes = document.getElementById("upscale_resolution");
-      if (upscaleRes) upscaleRes.value = data.upscale_resolution || "";
-
-      if (modelSelect) modelSelect.dispatchEvent(new Event("change", { bubbles: true }));
-      if (typeof updateUpscalePlaceholder === "function") updateUpscalePlaceholder();
-      if (typeof updateAdvancedFieldsVisibility === "function") updateAdvancedFieldsVisibility();
-
-      if (historyModal) historyModal.setAttribute("aria-hidden", "true");
-      if (outputsModal) outputsModal.setAttribute("aria-hidden", "true");
-      if (promptInput) { promptInput.focus(); promptInput.select(); }
-
-      showToast("Form updated — ready to generate");
+      hydrateGeneratorForm(data, action === "remix-new-seed");
     }
 
     if (action === "copy-prompt") {
@@ -380,7 +423,29 @@
       item.appendChild(meta);
 
       const actions = document.createElement("div");
-      actions.className = "image-actions flex gap-1.5 px-2.5 pb-2.5";
+      actions.className = "image-actions flex flex-wrap gap-1.5 px-2.5 pb-2.5";
+
+      const remixable = canRemixFromMetadata(image.metadata);
+
+      const remixBtn = document.createElement("button");
+      remixBtn.type = "button";
+      remixBtn.className = "flex-1 h-8 rounded-xl border border-[#d9dedb] dark:border-[#33413d] hover:bg-[#f7f7f4] dark:hover:bg-[#111514] text-xs font-medium";
+      remixBtn.textContent = "Remix";
+      remixBtn.title = "Remix from stored metadata";
+      remixBtn.addEventListener("click", (e) => {
+        e.stopImmediatePropagation();
+        hydrateGeneratorForm(remixDataFromMetadata(image), false);
+      });
+
+      const remixNewSeedBtn = document.createElement("button");
+      remixNewSeedBtn.type = "button";
+      remixNewSeedBtn.className = "flex-1 h-8 rounded-xl border border-[#d9dedb] dark:border-[#33413d] hover:bg-[#f7f7f4] dark:hover:bg-[#111514] text-xs font-medium";
+      remixNewSeedBtn.textContent = "New seed";
+      remixNewSeedBtn.title = "Remix from stored metadata with a new seed";
+      remixNewSeedBtn.addEventListener("click", (e) => {
+        e.stopImmediatePropagation();
+        hydrateGeneratorForm(remixDataFromMetadata(image), true);
+      });
 
       const viewBtn = document.createElement("button");
       viewBtn.type = "button";
@@ -418,6 +483,7 @@
         await loadOutputImages(true);
       });
 
+      if (remixable) actions.append(remixBtn, remixNewSeedBtn);
       actions.append(viewBtn, upscaleBtn, delBtn);
       item.appendChild(actions);
       outputsList.appendChild(item);
