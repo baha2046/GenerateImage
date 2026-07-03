@@ -13,6 +13,8 @@
       templatesButton, templatesModal, templatesClose, templatesList, templatesSearch, saveTemplateBtn,
       outputsButton, outputsModal, outputsClose, outputsList,
       settingsButton, settingsModal, settingsClose, settingsSave,
+      referenceImagePanel, referenceImagePreview, referenceImageName, referenceImageStatus,
+      referenceImageUpload, referenceImageUploadButton, referenceImagePath, referenceImagePathButton,
       compareModal, compareClose, compareSwap, compareReset,
       compareSliderContainer, compareImageA, compareImageBWrapper, compareImageB, compareHandle,
       compareLabelA, compareLabelB;
@@ -51,6 +53,15 @@
     settingsModal = document.getElementById("settings-modal");
     settingsClose = document.getElementById("settings-close");
     settingsSave = document.getElementById("settings-save");
+
+    referenceImagePanel = document.getElementById("reference-image-panel");
+    referenceImagePreview = document.getElementById("reference-image-preview");
+    referenceImageName = document.getElementById("reference-image-name");
+    referenceImageStatus = document.getElementById("reference-image-status");
+    referenceImageUpload = document.getElementById("reference-image-upload");
+    referenceImageUploadButton = document.getElementById("reference-image-upload-button");
+    referenceImagePath = document.getElementById("reference-image-path");
+    referenceImagePathButton = document.getElementById("reference-image-path-button");
 
     compareModal = document.getElementById("compare-modal");
     compareClose = document.getElementById("compare-close");
@@ -215,6 +226,123 @@
     }
     div.appendChild(ul);
     formErrors.appendChild(div);
+  }
+
+  function setReferenceStatus(message, isError = false) {
+    if (!referenceImageStatus) return;
+    referenceImageStatus.textContent = message || "";
+    referenceImageStatus.style.color = isError ? "var(--error-text)" : "";
+  }
+
+  function renderReferenceImage(reference) {
+    if (!reference) {
+      if (referenceImageName) referenceImageName.textContent = "No active reference";
+      if (referenceImagePreview) referenceImagePreview.removeAttribute("src");
+      return;
+    }
+
+    if (referenceImageName) referenceImageName.textContent = reference.display_name || reference.path || "Active reference";
+    if (referenceImagePath) referenceImagePath.value = reference.path || "";
+    if (referenceImagePreview) {
+      const separator = (reference.preview_url || "").includes("?") ? "&" : "?";
+      referenceImagePreview.src = `${reference.preview_url || "/reference-image/preview"}${separator}t=${Date.now()}`;
+    }
+  }
+
+  function updateReferencePanelVisibility() {
+    if (!referenceImagePanel || !modelSelect) return;
+    const shouldShow = modelSelect.value === "flux2-9B-face";
+    referenceImagePanel.hidden = !shouldShow;
+    referenceImagePanel.classList.toggle("hidden", !shouldShow);
+    if (shouldShow) loadActiveReferenceImage();
+  }
+
+  async function loadActiveReferenceImage() {
+    if (!referenceImagePanel) return;
+    try {
+      setReferenceStatus("Loading reference...");
+      const resp = await fetch("/reference-image");
+      const data = await resp.json();
+      if (!resp.ok || data.error) {
+        renderReferenceImage(null);
+        setReferenceStatus(data.error || "Reference image could not be loaded.", true);
+        return;
+      }
+      renderReferenceImage(data.reference);
+      setReferenceStatus("Active reference is ready.");
+    } catch (e) {
+      renderReferenceImage(null);
+      setReferenceStatus("Reference image could not be loaded.", true);
+    }
+  }
+
+  async function submitReferencePath() {
+    if (!referenceImagePath || !referenceImagePathButton) return;
+    const rawPath = referenceImagePath.value.trim();
+    if (!rawPath) {
+      renderFormErrors(["Reference image path is required."]);
+      setReferenceStatus("Reference image path is required.", true);
+      return;
+    }
+
+    referenceImagePathButton.disabled = true;
+    setReferenceStatus("Saving reference path...");
+    try {
+      const fd = new FormData();
+      fd.append("path", rawPath);
+      const resp = await fetch("/reference-image/path", { method: "POST", body: fd });
+      const data = await resp.json();
+      if (!resp.ok || data.error) {
+        const message = data.error || "Reference image path could not be saved.";
+        renderFormErrors([message]);
+        setReferenceStatus(message, true);
+        return;
+      }
+      renderFormErrors([]);
+      renderReferenceImage(data.reference);
+      setReferenceStatus("Reference path saved.");
+      showToast("Reference image updated");
+    } catch (e) {
+      renderFormErrors(["Reference image path could not be saved."]);
+      setReferenceStatus("Reference image path could not be saved.", true);
+    } finally {
+      referenceImagePathButton.disabled = false;
+    }
+  }
+
+  async function uploadReferenceImage() {
+    if (!referenceImageUpload || !referenceImageUploadButton) return;
+    const file = referenceImageUpload.files && referenceImageUpload.files[0];
+    if (!file) {
+      renderFormErrors(["Choose a reference image to upload."]);
+      setReferenceStatus("Choose a reference image to upload.", true);
+      return;
+    }
+
+    referenceImageUploadButton.disabled = true;
+    setReferenceStatus("Uploading reference image...");
+    try {
+      const fd = new FormData();
+      fd.append("file", file);
+      const resp = await fetch("/reference-image/upload", { method: "POST", body: fd });
+      const data = await resp.json();
+      if (!resp.ok || data.error) {
+        const message = data.error || "Reference image could not be uploaded.";
+        renderFormErrors([message]);
+        setReferenceStatus(message, true);
+        return;
+      }
+      renderFormErrors([]);
+      renderReferenceImage(data.reference);
+      referenceImageUpload.value = "";
+      setReferenceStatus("Uploaded reference is active.");
+      showToast("Reference image uploaded");
+    } catch (e) {
+      renderFormErrors(["Reference image could not be uploaded."]);
+      setReferenceStatus("Reference image could not be uploaded.", true);
+    } finally {
+      referenceImageUploadButton.disabled = false;
+    }
   }
 
   // === Modal Helpers ===
@@ -429,9 +557,8 @@
 
       const remixBtn = document.createElement("button");
       remixBtn.type = "button";
-      remixBtn.className = "flex-1 h-8 rounded-xl border border-[#d9dedb] dark:border-[#33413d] hover:bg-[#f7f7f4] dark:hover:bg-[#111514] text-xs font-medium";
-      remixBtn.textContent = "Remix";
-      remixBtn.title = "Remix from stored metadata";
+      remixBtn.className = "flex-1 h-8 rounded-xl border border-[#d9dedb] dark:border-[#33413d] hover:bg-[#f7f7f4] dark:hover:bg-[#111514] text-xs flex items-center justify-center gap-1";
+      setIconButton(remixBtn, "remix", "Remix from stored metadata");
       remixBtn.addEventListener("click", (e) => {
         e.stopImmediatePropagation();
         hydrateGeneratorForm(remixDataFromMetadata(image), false);
@@ -439,9 +566,8 @@
 
       const remixNewSeedBtn = document.createElement("button");
       remixNewSeedBtn.type = "button";
-      remixNewSeedBtn.className = "flex-1 h-8 rounded-xl border border-[#d9dedb] dark:border-[#33413d] hover:bg-[#f7f7f4] dark:hover:bg-[#111514] text-xs font-medium";
-      remixNewSeedBtn.textContent = "New seed";
-      remixNewSeedBtn.title = "Remix from stored metadata with a new seed";
+      remixNewSeedBtn.className = "flex-1 h-8 rounded-xl border border-[#d9dedb] dark:border-[#33413d] hover:bg-[#f7f7f4] dark:hover:bg-[#111514] text-xs flex items-center justify-center gap-1";
+      setIconButton(remixNewSeedBtn, "new_seed", "Remix from stored metadata with a new seed");
       remixNewSeedBtn.addEventListener("click", (e) => {
         e.stopImmediatePropagation();
         hydrateGeneratorForm(remixDataFromMetadata(image), true);
@@ -765,6 +891,22 @@
         if (stepsInput) stepsInput.value = defaults.steps;
         if (filenamePrefixInput) filenamePrefixInput.value = defaults.filenamePrefix;
         if (typeof updateAdvancedFieldsVisibility === "function") updateAdvancedFieldsVisibility();
+        if (typeof updateReferencePanelVisibility === "function") updateReferencePanelVisibility();
+      });
+    }
+
+    if (referenceImageUploadButton) {
+      referenceImageUploadButton.addEventListener("click", uploadReferenceImage);
+    }
+    if (referenceImagePathButton) {
+      referenceImagePathButton.addEventListener("click", submitReferencePath);
+    }
+    if (referenceImagePath) {
+      referenceImagePath.addEventListener("keydown", (event) => {
+        if (event.key === "Enter") {
+          event.preventDefault();
+          submitReferencePath();
+        }
       });
     }
 
@@ -789,6 +931,7 @@
 
     if (typeof updateUpscalePlaceholder === "function") updateUpscalePlaceholder();
     if (typeof updateAdvancedFieldsVisibility === "function") updateAdvancedFieldsVisibility();
+    if (typeof updateReferencePanelVisibility === "function") updateReferencePanelVisibility();
 
     // Auto-apply saved theme (now also handles Tailwind dark class)
     const savedTheme = localStorage.getItem("imagegen-theme");

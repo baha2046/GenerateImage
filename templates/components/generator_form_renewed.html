@@ -4,6 +4,33 @@
           <select id="model" name="model" class="w-full rounded-xl border border-[#d9dedb] dark:border-[#33413d] bg-white dark:bg-[#111514] px-4 py-3 text-base focus:outline-none focus:ring-2 focus:ring-[#0f766e] dark:focus:ring-[#2dd4bf]">{{ model_options | safe }}</select>
         </div>
 
+        <section id="reference-image-panel" class="hidden rounded-2xl border border-[#d9dedb] dark:border-[#33413d] bg-[#f7f7f4]/70 dark:bg-[#111514]/70 p-4 space-y-3">
+          <div class="flex items-start gap-3">
+            <img id="reference-image-preview" alt="Active face reference" class="h-16 w-16 shrink-0 rounded-xl border border-[#d9dedb] dark:border-[#33413d] object-cover bg-white dark:bg-[#1a201f]">
+            <div class="min-w-0 flex-1">
+              <div class="text-sm font-semibold text-[#1e2428] dark:text-[#edf3f1]">Face reference</div>
+              <div id="reference-image-name" class="mt-0.5 truncate text-xs text-[#626b73] dark:text-[#a7b1ad]">Loading reference...</div>
+              <div id="reference-image-status" class="mt-1 text-xs text-[#626b73] dark:text-[#a7b1ad]" aria-live="polite"></div>
+            </div>
+          </div>
+
+          <div class="grid gap-2">
+            <label for="reference-image-upload" class="block text-xs font-medium text-[#626b73] dark:text-[#a7b1ad]">Upload reference image</label>
+            <div class="flex gap-2">
+              <input id="reference-image-upload" type="file" accept="image/png,image/jpeg,image/webp" class="min-w-0 flex-1 rounded-xl border border-[#d9dedb] dark:border-[#33413d] bg-white dark:bg-[#111514] px-3 py-2 text-xs">
+              <button id="reference-image-upload-button" type="button" class="secondary shrink-0 rounded-xl border border-[#d9dedb] dark:border-[#33413d] px-3 py-2 text-xs font-semibold">Upload</button>
+            </div>
+          </div>
+
+          <div class="grid gap-2">
+            <label for="reference-image-path" class="block text-xs font-medium text-[#626b73] dark:text-[#a7b1ad]">Local image path</label>
+            <div class="flex gap-2">
+              <input id="reference-image-path" type="text" placeholder="/Users/ericchan/Pictures/reference.png" class="min-w-0 flex-1 rounded-xl border border-[#d9dedb] dark:border-[#33413d] bg-white dark:bg-[#111514] px-3 py-2 text-xs">
+              <button id="reference-image-path-button" type="button" class="secondary shrink-0 rounded-xl border border-[#d9dedb] dark:border-[#33413d] px-3 py-2 text-xs font-semibold">Use Path</button>
+            </div>
+          </div>
+        </section>
+
         <div>
           <div class="flex items-center justify-between mb-1.5">
             <label for="prompt" class="block text-sm font-semibold text-[#626b73] dark:text-[#a7b1ad]">Prompt</label>

@@ -139,6 +139,47 @@ textarea {
   margin: 0;
 }
 
+.reference-image-panel {
+  margin-top: 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 12px;
+  background: color-mix(in srgb, var(--panel) 94%, var(--bg));
+}
+
+.reference-image-panel[hidden] {
+  display: none;
+}
+
+.reference-image-active {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  margin-bottom: 10px;
+}
+
+.reference-image-active img {
+  width: 64px;
+  height: 64px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  object-fit: cover;
+  background: var(--panel);
+}
+
+.reference-image-active p {
+  margin: 2px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.reference-image-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+}
+
 .checkbox {
   display: flex;
   align-items: center;

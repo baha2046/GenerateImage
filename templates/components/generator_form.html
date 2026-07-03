@@ -2,6 +2,29 @@
         <label for="model">Model</label>
         <select id="model" name="model">{{ model_options | safe }}</select>
 
+        <section id="reference-image-panel" class="reference-image-panel" hidden>
+          <div class="reference-image-active">
+            <img id="reference-image-preview" alt="Active face reference">
+            <div>
+              <strong>Face reference</strong>
+              <p id="reference-image-name">Loading reference...</p>
+              <p id="reference-image-status" aria-live="polite"></p>
+            </div>
+          </div>
+
+          <label for="reference-image-upload">Upload reference image</label>
+          <div class="reference-image-row">
+            <input id="reference-image-upload" type="file" accept="image/png,image/jpeg,image/webp">
+            <button id="reference-image-upload-button" class="secondary" type="button">Upload</button>
+          </div>
+
+          <label for="reference-image-path">Local image path</label>
+          <div class="reference-image-row">
+            <input id="reference-image-path" type="text" placeholder="/Users/ericchan/Pictures/reference.png">
+            <button id="reference-image-path-button" class="secondary" type="button">Use Path</button>
+          </div>
+        </section>
+
         <div class="prompt-header">
           <label for="prompt">Prompt</label>
           <div class="history-actions">

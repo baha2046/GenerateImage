@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import html
+import inspect
 import json
 import random
 import re
@@ -13,10 +14,13 @@ from quart import Quart, Response, abort, jsonify, render_template, request, sen
 
 ROOT = Path(__file__).resolve().parent
 OUTPUTS_DIR = ROOT / "outputs"
+REFERENCE_IMAGES_DIR = ROOT / "reference_images"
 PROMPT_HISTORY_PATH = ROOT / "prompt_history.json"
 FORM_STATE_PATH = ROOT / "form_state.json"
 UI_SETTINGS_PATH = ROOT / "ui_settings.json"
 PROMPT_TEMPLATES_PATH = ROOT / "prompt_templates.json"
+REFERENCE_STATE_PATH = ROOT / "reference_state.json"
+DEFAULT_REFERENCE_IMAGE_PATH = ROOT / "face.png"
 MAX_PROMPT_HISTORY = 100
 MIN_DIMENSION = 64
 MAX_DIMENSION = 2048
@@ -97,7 +101,6 @@ MODELS = {
         "extra_args": [
             "--model", "AITRADER/FLUX2-klein-9B-mlx-4bit",
             "--base-model", "flux2-klein-9b",
-            "--image-paths", "face.png",
             "--guidance", "1.0",
         ],
         "default_steps": 4,
@@ -129,10 +132,66 @@ MODELS = {
 SAFE_PREFIX_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp"}
+UPLOAD_FILENAME_RE = re.compile(r"[^A-Za-z0-9_.-]+")
 
 
 def field(form: dict[str, str], name: str, default: str = "") -> str:
     return form.get(name, default).strip()
+
+
+def reference_display_name(path: Path) -> str:
+    try:
+        resolved = path.resolve()
+        reference_root = REFERENCE_IMAGES_DIR.resolve()
+        if reference_root in resolved.parents:
+            return resolved.name
+    except OSError:
+        pass
+    return str(path)
+
+
+def normalize_reference_image(path: Path, display_name: str | None = None) -> dict[str, str]:
+    resolved = path.expanduser().resolve()
+    if not resolved.exists() or not resolved.is_file() or resolved.suffix.lower() not in IMAGE_EXTENSIONS:
+        raise ValueError("Choose a valid reference image for Flux face generation.")
+    return {
+        "path": str(resolved),
+        "display_name": (display_name or reference_display_name(resolved)).strip() or resolved.name,
+        "preview_url": "/reference-image/preview",
+    }
+
+
+def load_active_reference_image() -> dict[str, str]:
+    try:
+        data = json.loads(REFERENCE_STATE_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return normalize_reference_image(DEFAULT_REFERENCE_IMAGE_PATH, "face.png")
+
+    if not isinstance(data, dict):
+        return normalize_reference_image(DEFAULT_REFERENCE_IMAGE_PATH, "face.png")
+
+    raw_path = str(data.get("path", "")).strip()
+    if not raw_path:
+        return normalize_reference_image(DEFAULT_REFERENCE_IMAGE_PATH, "face.png")
+
+    return normalize_reference_image(Path(raw_path), str(data.get("display_name", "")).strip() or None)
+
+
+def save_active_reference_image(path: Path, display_name: str | None = None) -> dict[str, str]:
+    reference = normalize_reference_image(path, display_name)
+    REFERENCE_STATE_PATH.write_text(json.dumps(reference, indent=2) + "\n", encoding="utf-8")
+    return reference
+
+
+def safe_reference_upload_name(filename: str) -> str:
+    clean_name = Path(filename.strip()).name
+    suffix = Path(clean_name).suffix.lower()
+    if not clean_name or suffix not in IMAGE_EXTENSIONS:
+        raise ValueError("Reference image must be a PNG, JPG, JPEG, or WEBP file.")
+
+    stem = Path(clean_name).stem.strip() or "reference"
+    stem = UPLOAD_FILENAME_RE.sub("-", stem).strip(".-_") or "reference"
+    return f"{stem}-{uuid.uuid4().hex[:10]}{suffix}"
 
 
 def load_prompt_history() -> list[str]:
@@ -415,6 +474,9 @@ def build_generation_metadata(values: dict[str, object], result: dict[str, objec
         if values.get(key) is not None:
             metadata[key] = values.get(key)
 
+    if values.get("reference_image") is not None:
+        metadata["reference_image"] = values.get("reference_image")
+
     if result.get("image_url"):
         metadata["image_url"] = str(result.get("image_url"))
 
@@ -640,6 +702,13 @@ def validate_form(form: dict[str, str]) -> tuple[dict[str, object], list[str]]:
         except ValueError:
             errors.append("LoRA scale must be a number.")
 
+    reference_image = None
+    if valid_model == "flux2-9B-face":
+        try:
+            reference_image = load_active_reference_image()
+        except ValueError as exc:
+            errors.append(str(exc))
+
     values: dict[str, object] = {
         "model": valid_model,
         "prompt": prompt,
@@ -657,6 +726,8 @@ def validate_form(form: dict[str, str]) -> tuple[dict[str, object], list[str]]:
         "lora_scale": lora_scale,
         "negative_prompt": negative_prompt or None,
     }
+    if reference_image is not None:
+        values["reference_image"] = reference_image
     return values, errors
 
 
@@ -923,6 +994,10 @@ async def run_generation(values: dict[str, object], job: dict[str, object]) -> d
     if values.get("negative_prompt"):
         command.extend(["--negative-prompt", str(values["negative_prompt"])])
 
+    reference_image = values.get("reference_image")
+    if values.get("model") == "flux2-9B-face" and isinstance(reference_image, dict):
+        command.extend(["--image-paths", str(reference_image.get("path", ""))])
+
     command.extend(["--output", str(output_path)])
 
     try:
@@ -1079,6 +1154,8 @@ def svg_icon(name: str) -> str:
         "check": '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m20 6-11 11-5-5"/></svg>',
         "external": '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M21 14v5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5"/></svg>',
         "rename": '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>',
+        "remix": '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7h3a5 5 0 0 1 4 2l4 6a5 5 0 0 0 4 2h3"/><path d="M3 17h3a5 5 0 0 0 4-2l.8-1.2"/><path d="M14 9.2A5 5 0 0 1 18 7h3"/><path d="m18 4 3 3-3 3"/><path d="m18 14 3 3-3 3"/></svg>',
+        "new_seed": '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M16 3h5v5"/><path d="M21 3 15 9"/><path d="M10 4a6 6 0 1 0 6 6"/><path d="M9 9h.01"/><path d="M13 13h.01"/><path d="M8 14h.01"/></svg>',
         "trash": '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="m19 6-1 14H6L5 6"/><path d="M10 11v5"/><path d="M14 11v5"/></svg>',
         "close": '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>',
         "upscale": '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 17h4v4"/><path d="m7 17-4 4"/><path d="M21 7h-4V3"/><path d="m17 7 4-4"/><rect x="8" y="8" width="8" height="8" rx="1"/></svg>',
@@ -1157,6 +1234,8 @@ def page(values: dict[str, object] | None = None, result: dict[str, object] | No
         check: `{svg_icon("check")}`,
         external: `{svg_icon("external")}`,
         rename: `{svg_icon("rename")}`,
+        remix: `{svg_icon("remix")}`,
+        new_seed: `{svg_icon("new_seed")}`,
         trash: `{svg_icon("trash")}`,
         upscale: `{svg_icon("upscale")}`,
       }}
@@ -1609,6 +1688,8 @@ async def index() -> Response:
         check: `{svg_icon("check")}`,
         external: `{svg_icon("external")}`,
         rename: `{svg_icon("rename")}`,
+        remix: `{svg_icon("remix")}`,
+        new_seed: `{svg_icon("new_seed")}`,
         trash: `{svg_icon("trash")}`,
         upscale: `{svg_icon("upscale")}`,
       }}
@@ -1680,6 +1761,69 @@ async def form_state_dimensions():
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
     return jsonify(state)
+
+
+@app.get("/reference-image")
+async def get_reference_image():
+    try:
+        reference = await asyncio.to_thread(load_active_reference_image)
+    except ValueError as exc:
+        return jsonify({"error": str(exc), "reference": None}), 404
+    return jsonify({"reference": reference})
+
+
+@app.post("/reference-image/path")
+async def set_reference_image_path():
+    form_data = await request.form
+    raw_path = form_data.get("path", "").strip()
+    if not raw_path:
+        return jsonify({"error": "Reference image path is required."}), 400
+
+    try:
+        reference = await asyncio.to_thread(save_active_reference_image, Path(raw_path), None)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    return jsonify({"reference": reference})
+
+
+@app.post("/reference-image/upload")
+async def upload_reference_image():
+    files = await request.files
+    upload = files.get("file")
+    if upload is None or not upload.filename:
+        return jsonify({"error": "Choose a reference image to upload."}), 400
+
+    try:
+        filename = safe_reference_upload_name(upload.filename)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+    REFERENCE_IMAGES_DIR.mkdir(exist_ok=True)
+    destination = REFERENCE_IMAGES_DIR / filename
+    content = upload.read()
+    if inspect.isawaitable(content):
+        content = await content
+    await asyncio.to_thread(destination.write_bytes, content)
+
+    try:
+        reference = await asyncio.to_thread(save_active_reference_image, destination, filename)
+    except ValueError as exc:
+        destination.unlink(missing_ok=True)
+        return jsonify({"error": str(exc)}), 400
+    return jsonify({"reference": reference})
+
+
+@app.get("/reference-image/preview")
+async def preview_reference_image():
+    try:
+        reference = await asyncio.to_thread(load_active_reference_image)
+    except ValueError:
+        abort(404)
+
+    path = Path(reference["path"])
+    if not path.exists() or not path.is_file() or path.suffix.lower() not in IMAGE_EXTENSIONS:
+        abort(404)
+    return await send_file(path)
 
 
 @app.get("/settings")
@@ -1896,6 +2040,7 @@ async def output_file(filename: str):
 
 def main() -> None:
     OUTPUTS_DIR.mkdir(exist_ok=True)
+    REFERENCE_IMAGES_DIR.mkdir(exist_ok=True)
     app.run(host=HOST, port=PORT)
 
 
